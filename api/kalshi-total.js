@@ -1,19 +1,11 @@
+import { eventTicker, findEvent } from '../lib/kalshi.js';
 export default async function handler(req, res) {
-  const { away, home } = req.query;
-  if (!away || !home) return res.status(400).json({ error: 'missing away or home' });
+  const { away, home, gameDate } = req.query;
+  try { eventTicker('KXNFLTOTAL', away, home, gameDate); }
+  catch (error) { return res.status(400).json({ error: error.message }); }
 
   try {
-    const r = await fetch(
-      'https://api.elections.kalshi.com/trade-api/v2/events?series_ticker=KXNFLTOTAL&status=open&with_nested_markets=true&limit=200'
-    );
-    if (!r.ok) throw new Error(`Kalshi API returned ${r.status}`);
-    const data = await r.json();
-    const events = data.events || [];
-
-    const suffix = `${away}${home}`;
-    const match = events.find(e =>
-      e.event_ticker && e.event_ticker.startsWith('KXNFLTOTAL-') && e.event_ticker.endsWith(suffix)
-    );
+    const match = await findEvent('KXNFLTOTAL', away, home, gameDate);
 
     if (!match || !match.markets || !match.markets.length) {
       return res.status(200).json({ available: false });
