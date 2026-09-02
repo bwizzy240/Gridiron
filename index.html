@@ -82,6 +82,10 @@
     padding: 16px 16px 0;
   }
 
+  @media (min-width: 860px) {
+    main { max-width: 1080px; }
+  }
+
   .status {
     text-align: center;
     color: var(--ink-soft);
@@ -91,41 +95,52 @@
 
   .games {
     display: flex;
-    flex-direction: column;
+    flex-wrap: wrap;
     gap: 10px;
+  }
+
+  .game-card {
+    flex: 0 0 calc((100% - 2 * 10px) / 3);
+    min-width: 0;
+  }
+
+  @media (min-width: 860px) {
+    .games { gap: 12px; }
+    .game-card { flex-basis: calc((100% - 3 * 12px) / 4); }
   }
 
   .game-card {
     background: var(--card);
     border: 1px solid var(--line);
-    border-radius: 12px;
-    padding: 14px 16px 16px;
+    border-radius: 10px;
+    padding: 9px 8px 10px;
     box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+    font-size: 11px;
   }
 
   .kickoff {
-    font-size: 11px;
+    font-size: 8px;
     color: var(--ink-soft);
-    letter-spacing: 0.4px;
-    margin-bottom: 10px;
+    letter-spacing: 0.2px;
+    margin-bottom: 6px;
   }
 
   .matchup-row {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 4px 0;
+    gap: 5px;
+    padding: 2px 0;
   }
 
   .badge {
-    width: 26px;
-    height: 26px;
+    width: 18px;
+    height: 18px;
     border-radius: 50%;
     flex-shrink: 0;
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 9.5px;
+    font-size: 6.5px;
     font-weight: 700;
     color: var(--ink);
     border: 1.5px solid rgba(255, 255, 255, 0.2);
@@ -138,7 +153,7 @@
   }
 
   .team-name {
-    font-size: 14.5px;
+    font-size: 10px;
     font-weight: 600;
     color: var(--ink);
     white-space: nowrap;
@@ -147,12 +162,12 @@
   }
 
   .team-record {
-    font-size: 10.5px;
+    font-size: 7.5px;
     color: var(--ink-soft);
   }
 
   .pct {
-    font-size: 20px;
+    font-size: 13px;
     font-weight: 700;
     flex-shrink: 0;
   }
@@ -162,10 +177,10 @@
 
   .bar {
     display: flex;
-    height: 6px;
-    border-radius: 3px;
+    height: 4px;
+    border-radius: 2px;
     overflow: hidden;
-    margin: 10px 0 2px;
+    margin: 6px 0 2px;
     background: var(--line);
   }
 
@@ -187,7 +202,7 @@
 
   .chevron {
     color: var(--ink-soft);
-    font-size: 10px;
+    font-size: 8px;
     transition: transform 0.15s ease;
   }
 
@@ -195,28 +210,28 @@
 
   .odds-panel {
     border-top: 1px solid var(--line);
-    margin-top: 12px;
-    padding-top: 12px;
+    margin-top: 8px;
+    padding-top: 8px;
   }
 
   .odds-status {
-    font-size: 12.5px;
+    font-size: 9px;
     color: var(--ink-soft);
     text-align: center;
-    padding: 6px 4px;
-    line-height: 1.5;
+    padding: 4px 2px;
+    line-height: 1.4;
   }
 
   .odds-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 10px;
+    gap: 6px;
   }
 
   .odds-col {
     text-align: center;
-    padding: 10px 8px;
-    border-radius: 10px;
+    padding: 6px 4px;
+    border-radius: 8px;
     background: var(--night);
     border: 1.5px solid var(--line);
   }
@@ -225,32 +240,32 @@
   .odds-col.edge-neg { background: rgba(217, 88, 74, 0.14); border-color: var(--flag); }
 
   .odds-abbr {
-    font-size: 10px;
+    font-size: 7px;
     color: var(--ink-soft);
-    letter-spacing: 0.5px;
+    letter-spacing: 0.3px;
   }
 
   .odds-implied {
-    font-size: 19px;
+    font-size: 13px;
     font-weight: 700;
-    margin: 5px 0 4px;
+    margin: 3px 0 2px;
   }
 
   .odds-edge {
-    font-size: 10.5px;
+    font-size: 7.5px;
     color: var(--ink-soft);
-    line-height: 1.4;
+    line-height: 1.3;
   }
 
   .odds-col.edge-pos .odds-edge { color: var(--gold); font-weight: 600; }
   .odds-col.edge-neg .odds-edge { color: var(--flag); }
 
   .odds-caption {
-    font-size: 10px;
+    font-size: 7px;
     color: var(--ink-soft);
     text-align: center;
-    margin-top: 10px;
-    line-height: 1.5;
+    margin-top: 6px;
+    line-height: 1.4;
   }
 
   footer {
@@ -434,19 +449,20 @@
     const homeEdge = edgeFor(oddsData.home, game.homeWinProb, oddsData, game);
 
     return `
+      <div class="odds-caption" style="margin-top:0;margin-bottom:6px;">Kalshi odds</div>
       <div class="odds-grid">
         <div class="odds-col ${awayEdge.cls}">
-          <div class="odds-abbr mono">${game.away.abbr} · Kalshi</div>
+          <div class="odds-abbr mono">${game.away.abbr}</div>
           <div class="odds-implied mono">${awayImplied !== null ? Math.round(awayImplied * 100) + '%' : '—'}</div>
           <div class="odds-edge">${awayEdge.text}</div>
         </div>
         <div class="odds-col ${homeEdge.cls}">
-          <div class="odds-abbr mono">${game.home.abbr} · Kalshi</div>
+          <div class="odds-abbr mono">${game.home.abbr}</div>
           <div class="odds-implied mono">${homeImplied !== null ? Math.round(homeImplied * 100) + '%' : '—'}</div>
           <div class="odds-edge">${homeEdge.text}</div>
         </div>
       </div>
-      <div class="odds-caption">Kalshi-implied probability vs. the model above; edge is in probability points after estimated fees and a 1¢/contract buffer, at 100 contracts.</div>
+      <div class="odds-caption">vs. model above · edge in pts after fees, 1¢ buffer, 100 contracts</div>
     `;
   }
 
