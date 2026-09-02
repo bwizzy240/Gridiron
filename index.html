@@ -83,7 +83,7 @@
   }
 
   @media (min-width: 860px) {
-    main { max-width: 1080px; }
+    main { max-width: 1320px; }
   }
 
   .status {
@@ -105,8 +105,8 @@
   }
 
   @media (min-width: 860px) {
-    .games { gap: 12px; }
-    .game-card { flex-basis: calc((100% - 3 * 12px) / 4); }
+    .games { gap: 18px; }
+    .game-card { flex-basis: calc((100% - 3 * 18px) / 4); }
   }
 
   .game-card {
@@ -266,6 +266,28 @@
     text-align: center;
     margin-top: 6px;
     line-height: 1.4;
+  }
+
+  /* Desktop: the compact mobile sizing (tuned for 3-up on a phone) reads
+     too small once cards have real screen space at 4-up. Scale back up. */
+  @media (min-width: 860px) {
+    .game-card { padding: 16px 16px 18px; border-radius: 14px; font-size: 13px; }
+    .kickoff { font-size: 11px; margin-bottom: 10px; }
+    .matchup-row { gap: 10px; padding: 3px 0; }
+    .badge { width: 28px; height: 28px; font-size: 10px; }
+    .team-name { font-size: 15px; }
+    .team-record { font-size: 10.5px; }
+    .pct { font-size: 20px; }
+    .bar { height: 6px; margin: 10px 0 2px; }
+    .chevron { font-size: 10px; }
+    .odds-panel { margin-top: 12px; padding-top: 12px; }
+    .odds-status { font-size: 12px; padding: 6px 4px; }
+    .odds-grid { gap: 10px; }
+    .odds-col { padding: 10px 8px; border-radius: 10px; }
+    .odds-abbr { font-size: 9px; }
+    .odds-implied { font-size: 18px; margin: 5px 0 4px; }
+    .odds-edge { font-size: 10px; }
+    .odds-caption { font-size: 9.5px; margin-top: 8px; }
   }
 
   footer {
