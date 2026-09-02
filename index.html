@@ -83,14 +83,18 @@
 
   .odds-section { padding: 0 18px 18px; }
   .odds-section h3 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px; margin: 0 0 10px; color: var(--ink-soft); }
-  .compare-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-  .compare-col { background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 12px; text-align: center; }
-  .compare-col .abbr { font-size: 11px; color: var(--ink-soft); text-transform: uppercase; }
-  .compare-col .row { display: flex; justify-content: space-between; font-size: 12px; margin-top: 6px; }
-  .compare-col .row .val { font-weight: 700; }
-  .compare-col .edge { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--line); font-size: 12px; font-weight: 700; }
-  .compare-col .edge.pos { color: var(--accent); }
-  .compare-col .edge.neg { color: var(--neg); }
+  .odds-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px; }
+  .odds-field label { display: block; font-size: 11px; text-transform: uppercase; color: var(--ink-soft); margin-bottom: 5px; font-weight: 600; }
+  .odds-field .value { padding: 11px 12px; font-family: 'SF Mono', ui-monospace, monospace; font-size: 15px; font-weight: 700; border: 1.5px solid var(--line); border-radius: 9px; background: var(--bg); }
+  .result { margin-top: 6px; padding-top: 12px; border-top: 1px dashed var(--line); display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .result .col { text-align: center; padding: 12px 8px; border-radius: 10px; background: var(--bg); border: 1.5px solid var(--line); }
+  .result .col.edge-pos { background: var(--pos-soft); border-color: var(--accent); }
+  .result .col.edge-neg { background: var(--neg-soft); border-color: var(--neg); }
+  .result .team-abbr { font-size: 11px; color: var(--ink-soft); text-transform: uppercase; font-weight: 600; }
+  .result .implied { font-size: 22px; font-weight: 800; margin: 6px 0 3px; font-family: 'SF Mono', ui-monospace, monospace; }
+  .result .edge { font-size: 11.5px; }
+  .result .edge.pos { color: var(--accent); font-weight: 700; }
+  .result .edge.neg { color: var(--neg); }
   .odds-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
   .odds-col { background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 12px; text-align: center; }
   .odds-col .label { font-size: 11px; color: var(--ink-soft); text-transform: uppercase; }
@@ -205,6 +209,12 @@ function readableTextColor(hex) {
   const r = parseInt(hex.substring(0,2),16), g = parseInt(hex.substring(2,4),16), b = parseInt(hex.substring(4,6),16);
   const lum = (0.299*r + 0.587*g + 0.114*b) / 255;
   return lum > 0.6 ? '#12253F' : '#F2F4F8';
+}
+
+function probToAmerican(p) {
+  if (p <= 0 || p >= 1) return null;
+  if (p >= 0.5) return Math.round(-100 * p / (1 - p));
+  return Math.round(100 * (1 - p) / p);
 }
 
 function americanToImplied(odds) {
@@ -382,28 +392,37 @@ async function toggleMatchup(card, ev, home, away) {
     let compareHTML = '';
     if (kalshiHomeProb !== null) {
       const kalshiAwayProb = 1 - kalshiHomeProb;
-      const awayEdge = (preBlendHomeWinProb !== null ? (1 - preBlendHomeWinProb) - kalshiAwayProb : 0) * 100;
+      const awayOddsVal = probToAmerican(kalshiAwayProb);
+      const homeOddsVal = probToAmerican(kalshiHomeProb);
+      const awayOddsStr = awayOddsVal > 0 ? `+${awayOddsVal}` : `${awayOddsVal}`;
+      const homeOddsStr = homeOddsVal > 0 ? `+${homeOddsVal}` : `${homeOddsVal}`;
+
+      const awayEdge = ((1 - preBlendHomeWinProb) - kalshiAwayProb) * 100;
       const homeEdge = (preBlendHomeWinProb - kalshiHomeProb) * 100;
 
-      function compareCol(abbr, modelProb, kalshiProb, edge) {
-        const edgeClass = edge > 0 ? 'pos' : (edge < 0 ? 'neg' : '');
+      function resultCol(abbr, implied, edge) {
+        const edgeClass = edge > 0 ? 'edge-pos' : (edge < 0 ? 'edge-neg' : '');
         const edgeText = edge > 0 ? `+${edge.toFixed(1)}% model edge` : `${edge.toFixed(1)}% vs Kalshi`;
+        const edgeSpanClass = edge > 0 ? 'pos' : 'neg';
         return `
-          <div class="compare-col">
-            <div class="abbr">${abbr}</div>
-            <div class="row"><span>Our model</span><span class="val">${(modelProb * 100).toFixed(1)}%</span></div>
-            <div class="row"><span>Kalshi</span><span class="val">${(kalshiProb * 100).toFixed(1)}%</span></div>
-            <div class="edge ${edgeClass}">${edgeText}</div>
+          <div class="col ${edgeClass}">
+            <div class="team-abbr">${abbr}</div>
+            <div class="implied">${(implied * 100).toFixed(1)}%</div>
+            <div class="edge ${edgeSpanClass}">${edgeText}</div>
           </div>
         `;
       }
 
       compareHTML = `
         <div class="odds-section">
-          <h3>Our model vs. Kalshi</h3>
-          <div class="compare-grid">
-            ${compareCol(away.team.abbreviation, 1 - preBlendHomeWinProb, kalshiAwayProb, awayEdge)}
-            ${compareCol(home.team.abbreviation, preBlendHomeWinProb, kalshiHomeProb, homeEdge)}
+          <h3>Live Kalshi odds</h3>
+          <div class="odds-row">
+            <div class="odds-field"><label>${away.team.abbreviation} odds</label><div class="value">${awayOddsStr}</div></div>
+            <div class="odds-field"><label>${home.team.abbreviation} odds</label><div class="value">${homeOddsStr}</div></div>
+          </div>
+          <div class="result">
+            ${resultCol(away.team.abbreviation, kalshiAwayProb, awayEdge)}
+            ${resultCol(home.team.abbreviation, kalshiHomeProb, homeEdge)}
           </div>
         </div>
       `;
