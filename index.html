@@ -101,6 +101,28 @@
   .odds-col .line { font-size: 15px; font-weight: 700; margin: 4px 0; }
 
   footer { max-width: 60ch; margin: 26px auto 0; padding: 0 18px 30px; font-size: 11.5px; color: var(--ink-soft); line-height: 1.6; text-align: center; }
+
+  .paper-log { margin-bottom: 18px; padding: 16px; background: var(--card); border: 1px solid var(--line); border-radius: 12px; }
+  .paper-log summary { cursor: pointer; font-weight: 700; }
+  .paper-log p, .edge-comparison p { font-size: 14px; line-height: 1.5; color: var(--ink-soft); }
+  .edge-comparison { padding: 18px; border-top: 1px solid var(--line); }
+  .edge-comparison h3 { margin: 0 0 12px; font-size: 16px; }
+  .edge-settings { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+  .edge-settings label { font-size: 14px; display: grid; gap: 6px; }
+  .edge-comparison input, .paper-log select, .paper-log input { width: 100%; min-width: 0; padding: 10px; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; font-size: 16px; }
+  .edge-comparison button, .paper-log button { padding: 10px 12px; color: var(--ink); background: var(--field); border: 1px solid var(--accent); border-radius: 8px; cursor: pointer; font-size: 14px; }
+  button:disabled { opacity: .5; cursor: default; }
+  .edge-comparison .result { margin-top: 14px; }
+  .edge-comparison .team-abbr, .edge-comparison .edge { font-size: 14px; }
+  .edge-comparison details { margin-top: 12px; font-size: 14px; }
+  .edge-comparison details p { white-space: pre-line; }
+  .paper-table { overflow-x: auto; margin-top: 12px; }
+  .paper-table table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  .paper-table th, .paper-table td { padding: 10px; text-align: left; border-bottom: 1px solid var(--line); vertical-align: top; min-width: 90px; }
+  .paper-table small { display: block; margin-top: 5px; color: var(--ink-soft); }
+  .paper-log a, .edge-comparison a { color: var(--accent); }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+  @media (max-width: 420px) { .edge-settings { grid-template-columns: 1fr; } .edge-comparison .result { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
@@ -117,6 +139,7 @@
 </div>
 
 <main>
+  <section id="paperLog" class="paper-log" aria-label="Paper trades"></section>
   <div id="gamesContainer" class="status">Loading games…</div>
 </main>
 
@@ -124,7 +147,8 @@
   Model estimates win probability from season point differential (Pythagorean win expectation), overall record, and home/away splits — Kalshi's live market pricing is shown alongside for comparison, not folded into the number. Not a guarantee, and it doesn't see injuries or coaching matchups yet. Data comes from ESPN's public but unofficial API and Kalshi's public market data, either of which could change without notice. Use it as one input, not the whole decision.
 </footer>
 
-<script>
+<script type="module">
+import { mountComparison, initPaperLog } from "./paper.js";
 let currentSeason = 2026;
 let currentSeasonType = 2;
 let currentWeek = 1;
@@ -250,7 +274,7 @@ function restPenalty(daysRest) {
 }
 
 function pythPct(pf, pa) {
-  if (!pf || !pa) return null;
+  if (pf == null || pa == null || pf + pa <= 0) return null;
   const p = 2.37;
   const pf2 = Math.pow(pf, p), pa2 = Math.pow(pa, p);
   return pf2 / (pf2 + pa2);
@@ -271,23 +295,23 @@ function blendPct(overall, pyth, split) {
   return w > 0 ? sum/w : 0.5;
 }
 
-async function getKalshiOdds(awayAbbr, homeAbbr) {
+async function getKalshiOdds(awayAbbr, homeAbbr, gameDate) {
   try {
-    return await fetchJSON(`/api/kalshi-odds?away=${awayAbbr}&home=${homeAbbr}`);
+    return await fetchJSON(`/api/kalshi-odds?away=${awayAbbr}&home=${homeAbbr}&gameDate=${encodeURIComponent(gameDate)}`);
   } catch (e) {
     return null;
   }
 }
-async function getKalshiSpread(awayAbbr, homeAbbr) {
+async function getKalshiSpread(awayAbbr, homeAbbr, gameDate) {
   try {
-    return await fetchJSON(`/api/kalshi-spread?away=${awayAbbr}&home=${homeAbbr}`);
+    return await fetchJSON(`/api/kalshi-spread?away=${awayAbbr}&home=${homeAbbr}&gameDate=${encodeURIComponent(gameDate)}`);
   } catch (e) {
     return null;
   }
 }
-async function getKalshiTotal(awayAbbr, homeAbbr) {
+async function getKalshiTotal(awayAbbr, homeAbbr, gameDate) {
   try {
-    return await fetchJSON(`/api/kalshi-total?away=${awayAbbr}&home=${homeAbbr}`);
+    return await fetchJSON(`/api/kalshi-total?away=${awayAbbr}&home=${homeAbbr}&gameDate=${encodeURIComponent(gameDate)}`);
   } catch (e) {
     return null;
   }
@@ -302,6 +326,8 @@ async function toggleMatchup(card, ev, home, away) {
   }
   document.querySelectorAll('.matchup-slot').forEach(s => { s.innerHTML = ''; s.dataset.open = 'false'; });
   slot.dataset.open = 'true';
+  const requestId = crypto.randomUUID();
+  slot.dataset.request = requestId;
   slot.innerHTML = '<div class="status">Crunching numbers…</div>';
 
   try {
@@ -313,12 +339,12 @@ async function toggleMatchup(card, ev, home, away) {
 
     function recPct(stats) {
       if (!stats.available || stats.gamesPlayed === 0) return null;
-      return stats.wins / stats.gamesPlayed;
+      return (stats.wins + 0.5 * (stats.ties || 0)) / stats.gamesPlayed;
     }
     function splitPct(stats, isHome) {
       const rec = isHome ? stats.homeRecord : stats.awayRecord;
-      const total = rec.wins + rec.losses;
-      return total > 0 ? rec.wins / total : null;
+      const total = rec.wins + rec.losses + (rec.ties || 0);
+      return total > 0 ? (rec.wins + 0.5 * (rec.ties || 0)) / total : null;
     }
 
     const awayOverall = recPct(awayStats);
@@ -339,8 +365,8 @@ async function toggleMatchup(card, ev, home, away) {
     homeWinProb = homeWinProb - homeRestPenalty + awayRestPenalty;
     homeWinProb = Math.min(0.97, Math.max(0.03, homeWinProb));
 
-    // Divisional games tend to be closer than the raw numbers suggest — a small, well-documented
-    // pull toward 50/50, since familiarity between division rivals evens things out somewhat.
+    // Existing heuristic: divisional estimates are pulled toward 50/50.
+    // This adjustment has not been calibrated or validated on held-out games.
     const divisional = isDivisionalGame(away.team.id, home.team.id);
     if (divisional) {
       homeWinProb = homeWinProb * 0.85 + 0.5 * 0.15;
@@ -349,16 +375,10 @@ async function toggleMatchup(card, ev, home, away) {
     // Live Kalshi pricing — fetched fresh each time a matchup is opened. Used for comparison only,
     // not folded into the displayed probability (that's our model's number alone).
     const [kalshiML, kalshiSpread, kalshiTotal] = await Promise.all([
-      getKalshiOdds(away.team.abbreviation, home.team.abbreviation),
-      getKalshiSpread(away.team.abbreviation, home.team.abbreviation),
-      getKalshiTotal(away.team.abbreviation, home.team.abbreviation)
+      getKalshiOdds(away.team.abbreviation, home.team.abbreviation, gameDate),
+      getKalshiSpread(away.team.abbreviation, home.team.abbreviation, gameDate),
+      getKalshiTotal(away.team.abbreviation, home.team.abbreviation, gameDate)
     ]);
-
-    let kalshiHomeProb = null;
-    if (kalshiML && kalshiML.available) {
-      if (kalshiML.yesTeam === home.team.abbreviation) kalshiHomeProb = kalshiML.yesProb;
-      else if (kalshiML.yesTeam === away.team.abbreviation) kalshiHomeProb = 1 - kalshiML.yesProb;
-    }
 
     const awayWinProb = 1 - homeWinProb;
     const homePct = Math.round(homeWinProb * 100);
@@ -385,53 +405,16 @@ async function toggleMatchup(card, ev, home, away) {
       `;
     }
 
-    let compareHTML = '';
-    if (kalshiHomeProb !== null) {
-      const kalshiAwayProb = 1 - kalshiHomeProb;
-      const awayOddsVal = probToAmerican(kalshiAwayProb);
-      const homeOddsVal = probToAmerican(kalshiHomeProb);
-      const awayOddsStr = awayOddsVal > 0 ? `+${awayOddsVal}` : `${awayOddsVal}`;
-      const homeOddsStr = homeOddsVal > 0 ? `+${homeOddsVal}` : `${homeOddsVal}`;
-
-      const awayEdge = ((1 - homeWinProb) - kalshiAwayProb) * 100;
-      const homeEdge = (homeWinProb - kalshiHomeProb) * 100;
-
-      function resultCol(abbr, implied, edge) {
-        const edgeClass = edge > 0 ? 'edge-pos' : (edge < 0 ? 'edge-neg' : '');
-        const edgeText = edge > 0 ? `+${edge.toFixed(1)}% model edge` : `${edge.toFixed(1)}% vs Kalshi`;
-        const edgeSpanClass = edge > 0 ? 'pos' : 'neg';
-        return `
-          <div class="col ${edgeClass}">
-            <div class="team-abbr">${abbr}</div>
-            <div class="implied">${(implied * 100).toFixed(1)}%</div>
-            <div class="edge ${edgeSpanClass}">${edgeText}</div>
-          </div>
-        `;
-      }
-
-      compareHTML = `
-        <div class="odds-section">
-          <h3>Live Kalshi odds</h3>
-          <div class="odds-row">
-            <div class="odds-field"><label>${away.team.abbreviation} odds</label><div class="value">${awayOddsStr}</div></div>
-            <div class="odds-field"><label>${home.team.abbreviation} odds</label><div class="value">${homeOddsStr}</div></div>
-          </div>
-          <div class="result">
-            ${resultCol(away.team.abbreviation, kalshiAwayProb, awayEdge)}
-            ${resultCol(home.team.abbreviation, kalshiHomeProb, homeEdge)}
-          </div>
-        </div>
-      `;
-    }
-
     const comp = ev.competitions[0];
     const weather = comp.weather;
 
     let signalNotes = [];
+    if (Math.min(awayStats.gamesPlayed, homeStats.gamesPlayed) < 4) signalNotes.push("limited regular-season data — estimate is unvalidated");
     if (divisional) signalNotes.push('divisional matchup (pulled slightly toward even)');
     if (awayRestPenalty > 0) signalNotes.push(`${away.team.abbreviation} on short rest (${awayStats.daysRest}d)`);
     if (homeRestPenalty > 0) signalNotes.push(`${home.team.abbreviation} on short rest (${homeStats.daysRest}d)`);
 
+    if (slot.dataset.open !== "true" || slot.dataset.request !== requestId) return;
     slot.innerHTML = `
       <div class="matchup">
         <div class="probbar-wrap">
@@ -444,7 +427,7 @@ async function toggleMatchup(card, ev, home, away) {
             <div class="home-fill" style="width:${homePct}%"></div>
           </div>
           <div class="probbar-caption">
-            Chance to win — based on point differential, record, and home/away form.<br>
+            Model estimate — point differential, record, and home/away form. Ties are not separately modeled.<br>
             ${away.team.abbreviation}: ${awayStats.wins || 0}-${awayStats.losses || 0}, ${awayStats.pointsFor != null ? awayStats.pointsFor : '—'} PF / ${awayStats.pointsAgainst != null ? awayStats.pointsAgainst : '—'} PA
             &nbsp;·&nbsp;
             ${home.team.abbreviation}: ${homeStats.wins || 0}-${homeStats.losses || 0}, ${homeStats.pointsFor != null ? homeStats.pointsFor : '—'} PF / ${homeStats.pointsAgainst != null ? homeStats.pointsAgainst : '—'} PA
@@ -452,11 +435,17 @@ async function toggleMatchup(card, ev, home, away) {
             ${weather && weather.displayValue ? `<br>${weather.displayValue}${weather.temperature != null ? `, ${weather.temperature}°F` : ''} at kickoff` : ''}
           </div>
         </div>
-        ${compareHTML}
+        <div class="edge-comparison"></div>
         ${oddsHTML}
       </div>
     `;
+    mountComparison(slot.querySelector('.edge-comparison'), {
+      market: kalshiML, homeWinProb, awayWinProb, gameDate, gameId: ev.id,
+      home: home.team.abbreviation, away: away.team.abbreviation, homeStats, awayStats,
+      refresh: () => { slot.dataset.open = 'false'; toggleMatchup(card, ev, home, away); }
+    });
   } catch (err) {
+    if (slot.dataset.open !== 'true' || slot.dataset.request !== requestId) return;
     slot.innerHTML = `<div class="error-box">Couldn't compute this matchup: ${err.message}</div>`;
   }
 }
@@ -470,6 +459,7 @@ document.getElementById('nextWeek').addEventListener('click', () => {
   loadGames();
 });
 
+initPaperLog(document.getElementById("paperLog"));
 loadGames();
 </script>
 </body>
