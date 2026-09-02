@@ -146,14 +146,22 @@
 
 <script type="module">
   // TODO: wire in the real model.
-  // import { matchupProbability, projectPoints, spreadProbs, totalProbs } from './model.js';
+  // import { summarizeSeason, matchupProbability } from './model.js';
+  //
+  // Real integration path, per game:
+  //   1. Fetch each team's schedule data (via api/ or lib/ — not wired up yet).
+  //   2. homeStats = summarizeSeason(homeScheduleData, homeTeamId, season, kickoffISODate)
+  //      awayStats = summarizeSeason(awayScheduleData, awayTeamId, season, kickoffISODate)
+  //   3. const { homeWinProb } = matchupProbability(homeStats, awayStats, homeAbbr, awayAbbr)
+  //   4. Drop that value straight into the `homeWinProb` field below — the render
+  //      functions already expect this exact shape, nothing else changes.
   //
   // Expected shape per game, once real data replaces this stub:
   // {
   //   away: { abbr: 'BUF', name: 'Bills' },
   //   home: { abbr: 'KC',  name: 'Chiefs' },
   //   kickoff: '2026-09-07T17:00:00Z',
-  //   homeWinProb: 0.64   // from matchupProbability(...)
+  //   homeWinProb: 0.64   // from matchupProbability(...).homeWinProb
   // }
 
   const STUB_GAMES = [
