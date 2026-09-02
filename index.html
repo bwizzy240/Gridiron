@@ -207,6 +207,32 @@ function americanToImplied(odds) {
   return n > 0 ? 100/(n+100) : -n/(-n+100);
 }
 
+// NFL divisions are fixed for the season — stable public knowledge, not from an API.
+const NFL_DIVISIONS = {
+  2: 'AFC East', 15: 'AFC East', 17: 'AFC East', 20: 'AFC East',
+  33: 'AFC North', 4: 'AFC North', 5: 'AFC North', 23: 'AFC North',
+  34: 'AFC South', 11: 'AFC South', 30: 'AFC South', 10: 'AFC South',
+  7: 'AFC West', 12: 'AFC West', 13: 'AFC West', 24: 'AFC West',
+  6: 'NFC East', 19: 'NFC East', 21: 'NFC East', 28: 'NFC East',
+  3: 'NFC North', 8: 'NFC North', 9: 'NFC North', 16: 'NFC North',
+  1: 'NFC South', 29: 'NFC South', 18: 'NFC South', 27: 'NFC South',
+  22: 'NFC West', 14: 'NFC West', 25: 'NFC West', 26: 'NFC West'
+};
+
+function isDivisionalGame(teamIdA, teamIdB) {
+  const divA = NFL_DIVISIONS[teamIdA];
+  const divB = NFL_DIVISIONS[teamIdB];
+  return divA && divB && divA === divB;
+}
+
+function restPenalty(daysRest) {
+  // Standard NFL rest is ~6-7 days. Short week (Thursday games, 3-4 days) is a real,
+  // well-documented effect. Long rest beyond a bye isn't penalized — too ambiguous either way.
+  if (daysRest === null || daysRest === undefined) return 0;
+  if (daysRest <= 4) return 0.03; // shifts win prob slightly against the short-rested team
+  return 0;
+}
+
 function pythPct(pf, pa) {
   if (!pf || !pa) return null;
   const p = 2.37;
@@ -241,9 +267,10 @@ async function toggleMatchup(card, ev, home, away, oddsBlock) {
   slot.innerHTML = '<div class="status">Crunching numbers…</div>';
 
   try {
+    const gameDate = ev.competitions[0].date;
     const [awayStats, homeStats] = await Promise.all([
-      fetchJSON(`/api/team-schedule?teamId=${away.team.id}&season=${currentSeason}`),
-      fetchJSON(`/api/team-schedule?teamId=${home.team.id}&season=${currentSeason}`)
+      fetchJSON(`/api/team-schedule?teamId=${away.team.id}&season=${currentSeason}&beforeDate=${encodeURIComponent(gameDate)}`),
+      fetchJSON(`/api/team-schedule?teamId=${home.team.id}&season=${currentSeason}&beforeDate=${encodeURIComponent(gameDate)}`)
     ]);
 
     function recPct(stats) {
@@ -267,6 +294,19 @@ async function toggleMatchup(card, ev, home, away, oddsBlock) {
     const homeBlend = blendPct(homeOverall, homePyth, homeSplit);
 
     let homeWinProb = log5(homeBlend, awayBlend);
+
+    // Short-rest penalty: nudges win prob slightly against whichever team is on short rest.
+    const awayRestPenalty = restPenalty(awayStats.daysRest);
+    const homeRestPenalty = restPenalty(homeStats.daysRest);
+    homeWinProb = homeWinProb - homeRestPenalty + awayRestPenalty;
+    homeWinProb = Math.min(0.97, Math.max(0.03, homeWinProb));
+
+    // Divisional games tend to be closer than the raw numbers suggest — a small, well-documented
+    // pull toward 50/50, since familiarity between division rivals evens things out somewhat.
+    const divisional = isDivisionalGame(away.team.id, home.team.id);
+    if (divisional) {
+      homeWinProb = homeWinProb * 0.85 + 0.5 * 0.15;
+    }
 
     let vegasHomeProb = null;
     if (oddsBlock && oddsBlock.moneyline) {
@@ -305,6 +345,14 @@ async function toggleMatchup(card, ev, home, away, oddsBlock) {
       `;
     }
 
+    const comp = ev.competitions[0];
+    const weather = comp.weather;
+
+    let signalNotes = [];
+    if (divisional) signalNotes.push('divisional matchup (pulled slightly toward even)');
+    if (awayRestPenalty > 0) signalNotes.push(`${away.team.abbreviation} on short rest (${awayStats.daysRest}d)`);
+    if (homeRestPenalty > 0) signalNotes.push(`${home.team.abbreviation} on short rest (${homeStats.daysRest}d)`);
+
     slot.innerHTML = `
       <div class="matchup">
         <div class="probbar-wrap">
@@ -321,6 +369,8 @@ async function toggleMatchup(card, ev, home, away, oddsBlock) {
             ${away.team.abbreviation}: ${awayStats.wins || 0}-${awayStats.losses || 0}, ${awayStats.pointsFor != null ? awayStats.pointsFor : '—'} PF / ${awayStats.pointsAgainst != null ? awayStats.pointsAgainst : '—'} PA
             &nbsp;·&nbsp;
             ${home.team.abbreviation}: ${homeStats.wins || 0}-${homeStats.losses || 0}, ${homeStats.pointsFor != null ? homeStats.pointsFor : '—'} PF / ${homeStats.pointsAgainst != null ? homeStats.pointsAgainst : '—'} PA
+            ${signalNotes.length ? `<br>${signalNotes.join(' · ')}` : ''}
+            ${weather && weather.displayValue ? `<br>${weather.displayValue}${weather.temperature != null ? `, ${weather.temperature}°F` : ''} at kickoff` : ''}
           </div>
         </div>
         ${oddsHTML}
