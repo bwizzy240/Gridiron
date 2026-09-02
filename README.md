@@ -1,6 +1,6 @@
 # Gridiron
 
-NFL season-form estimates alongside Kalshi's available YES buy prices, with a browser-local paper-trade journal. This is an unvalidated research tool; a positive model difference does not demonstrate profitable trading.
+Pregame NFL probability estimates with an independent forecast journal and optional Kalshi comparisons. This is an unvalidated research tool; a positive model difference does not demonstrate profitable trading.
 
 ## Run and deploy
 
@@ -38,3 +38,9 @@ References: [Kalshi fees](https://kalshi.com/docs/kalshi-fee-schedule.pdf), [ser
 `model.js` owns the shared season aggregation and probability functions; `api/team-schedule.js` fetches both seasons. ESPN may label its top-level response with the current league season even for historical requests, so the parser checks event-level seasons and game dates. Duplicate game IDs, malformed scores, preseason/postseason records, the target game, and later games are excluded. A current-season fetch failure is an API error; a historical fetch failure is explicitly marked and never presented as real history. No head-to-head, injury or quarterback feed has been added in this update.
 
 Paper entries retain their original model versions and forecasts. Existing records remain readable.
+
+## Probability-first workflow
+
+Open a matchup to view the forecast immediately after team data loads. Kalshi requests begin only when its optional comparison is opened. Save forecast records the displayed probability, model version, and input snapshots before kickoff. After the final result, enter the winner in Forecast journal to inspect Brier score, log loss, accuracy, and calibration. Ties and voids are excluded from these binary scores because the target assumes a decisive result.
+
+The journal is separate from the existing market paper log. It stores the first saved forecast per game/version in localStorage, preserves original probabilities when results are entered, and exports JSON. Metrics cover only the saved selection and current model version. Read MODEL-QUALITY.md for the latest retrospective benchmark and the limits on claiming accuracy or precision. No probability-formula change was justified by the latest comparison.

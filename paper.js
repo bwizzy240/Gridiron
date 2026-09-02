@@ -26,7 +26,7 @@ function renderLog() {
   const settled = trades.filter(t => Number.isFinite(t.payout));
   const cost = settled.reduce((n, t) => n + t.cost, 0);
   const pnl = settled.reduce((n, t) => n + paperProfit(t), 0);
-  logRoot.innerHTML = `<details ${expanded ? 'open' : ''}><summary>Paper trades · ${trades.length} recorded</summary>
+  logRoot.innerHTML = `<details ${expanded ? 'open' : ''}><summary>Market paper trades · ${trades.length} recorded</summary>
     <p>Hypothetical entries at the quoted ask, including estimated fees and your cost buffer. Saved only in this browser; export a backup. No orders are placed.</p>
     <p>${settled.length} settled · P/L ${money(pnl)} · Return ${cost ? `${signed(pnl / cost * 100)}%` : '—'}</p>
     <p>After Kalshi settles, enter the actual payout per contract (0–1 dollars). A tie or cancellation can have a partial payout. Results are manually entered, not independently verified.</p>
@@ -66,7 +66,7 @@ export function mountComparison(root, context) {
     </div>
     <p>The 5-point threshold and 1¢ buffer are editable research assumptions. Net edge = model estimate − ask − estimated fee per contract − buffer. The model assumes a decisive result; ties and special settlements can change the payout.</p>
     <div class="result" aria-live="polite"></div>
-    <p class="freshness"></p><button class="refresh">Refresh matchup</button>
+    <p class="freshness"></p><button class="refresh">Refresh prices</button>
     <p>Current-season data fetched: ${escapeHTML(time(awayStats.fetchedAt))} / ${escapeHTML(time(homeStats.fetchedAt))}. Only completed regular-season games before this matchup are included. The data check counts each current-season game as one and each previous-season game as half, requiring at least four per team. Passing this check does not establish model accuracy.</p>
     <p>Previous-season data fetched: ${escapeHTML(time(awayStats.previousSeason?.fetchedAt))} / ${escapeHTML(time(homeStats.previousSeason?.fetchedAt))}. Previous records are softened toward league average; current results gradually replace that baseline. Missing history is explicitly labeled beside the model estimate.</p>
     <p>Fees use the current series multiplier and conservative rounding up to a whole cent per order. Actual fills, sub-cent rounding, and broker fees can differ. <a href="https://kalshi.com/docs/kalshi-fee-schedule.pdf" target="_blank" rel="noopener noreferrer">Kalshi fee schedule</a></p>

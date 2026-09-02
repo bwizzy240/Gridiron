@@ -123,13 +123,17 @@
   .paper-log a, .edge-comparison a { color: var(--accent); }
   :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
   @media (max-width: 420px) { .edge-settings { grid-template-columns: 1fr; } .edge-comparison .result { grid-template-columns: 1fr; } }
+  .market-panel { border-top: 1px solid var(--line); }
+  .market-panel > summary { padding: 18px; cursor: pointer; font-size: 14px; color: var(--ink-soft); }
+  .forecast-save { padding-top: 12px; }
+  .paper-table caption { text-align: left; padding: 10px; font-weight: 600; }
 </style>
 </head>
 <body>
 
 <header>
   <h1>Gridiron</h1>
-  <p>Estimates NFL win probability from current and previous-season performance, with live Kalshi pricing shown alongside for comparison.</p>
+  <p>Estimate pregame win probabilities, record forecasts, and measure how well they match results.</p>
 </header>
 
 <div class="weekbar">
@@ -139,17 +143,23 @@
 </div>
 
 <main>
+  <section id="forecastLog" class="paper-log" aria-label="Forecast journal"></section>
+  <details class="paper-log"><summary>Model quality · historical evidence</summary>
+    <p>The current model scored 0.2185 Brier and 0.6276 log loss on 543 decisive games from 2024–2025. Lower is better. This retrospective check supports further testing; it does not establish precise calibration.</p>
+    <p><a href="./MODEL-QUALITY.md" target="_blank" rel="noopener">Read the model comparison and limitations</a>. A 60% forecast should win about 60% of the time over many games. The journal lets you check that prospectively.</p>
+  </details>
   <section id="paperLog" class="paper-log" aria-label="Paper trades"></section>
   <div id="gamesContainer" class="status">Loading games…</div>
 </main>
 
 <footer>
-  Model combines current-season form with a previous-season baseline pulled toward league average, using point differential, record, and home/away splits — Kalshi's live market pricing is shown alongside for comparison, not folded into the number. Not a guarantee, and it doesn't see injuries or coaching matchups yet. Data comes from ESPN's public but unofficial API and Kalshi's public market data, either of which could change without notice. Use it as one input, not the whole decision.
+  Model combines current-season form with a previous-season baseline pulled toward league average, using point differential, record, and home/away splits. Kalshi comparisons are optional and never enter the probability calculation. Not a guarantee, and it doesn't see injuries or coaching matchups yet. Data comes from ESPN's public but unofficial API and Kalshi's public market data, either of which could change without notice. Use it as one input, not the whole decision.
 </footer>
 
 <script type="module">
 import { mountComparison, initPaperLog } from "./paper.js";
 import { matchupProbability } from "./model.js";
+import { initForecastLog, mountForecastSave } from "./forecasts.js";
 let currentSeason = 2026;
 let currentSeasonType = 2;
 let currentWeek = 1;
@@ -302,37 +312,8 @@ async function toggleMatchup(card, ev, home, away) {
     const awayRestPenalty = Number.isFinite(awayStats.daysRest) && awayStats.daysRest <= 4 ? .03 : 0;
     const homeRestPenalty = Number.isFinite(homeStats.daysRest) && homeStats.daysRest <= 4 ? .03 : 0;
 
-    // Live Kalshi pricing — fetched fresh each time a matchup is opened. Used for comparison only,
-    // not folded into the displayed probability (that's our model's number alone).
-    const [kalshiML, kalshiSpread, kalshiTotal] = await Promise.all([
-      getKalshiOdds(away.team.abbreviation, home.team.abbreviation, gameDate),
-      getKalshiSpread(away.team.abbreviation, home.team.abbreviation, gameDate),
-      getKalshiTotal(away.team.abbreviation, home.team.abbreviation, gameDate)
-    ]);
-
     const homePct = Math.round(homeWinProb * 100);
     const awayPct = 100 - homePct;
-
-    let oddsHTML = '';
-    if ((kalshiSpread && kalshiSpread.available) || (kalshiTotal && kalshiTotal.available)) {
-      const spreadLine = kalshiSpread && kalshiSpread.available ? kalshiSpread.lines[0] : null;
-      const totalLine = kalshiTotal && kalshiTotal.available ? kalshiTotal.lines[0] : null;
-      oddsHTML = `
-        <div class="odds-section">
-          <h3>Live Kalshi line</h3>
-          <div class="odds-grid">
-            <div class="odds-col">
-              <div class="label">Spread</div>
-              <div class="line">${spreadLine ? `${spreadLine.favoredTeam} -${spreadLine.line}` : '—'}</div>
-            </div>
-            <div class="odds-col">
-              <div class="label">Total</div>
-              <div class="line">O/U ${totalLine ? totalLine.line : '—'}</div>
-            </div>
-          </div>
-        </div>
-      `;
-    }
 
     const comp = ev.competitions[0];
     const weather = comp.weather;
@@ -356,7 +337,7 @@ async function toggleMatchup(card, ev, home, away) {
             <div class="home-fill" style="width:${homePct}%"></div>
           </div>
           <div class="probbar-caption">
-            Model estimate — current form plus a previous-season baseline. Ties are not separately modeled.<br>
+            Pregame win probability, assuming the game ends with a winner. Ties are not modeled. Rounded to whole percentages; small differences are not established precision.<br>
             ${awayStats.season} ${away.team.abbreviation}: ${awayStats.wins || 0}-${awayStats.losses || 0}, ${awayStats.pointsFor != null ? awayStats.pointsFor : '—'} PF / ${awayStats.pointsAgainst != null ? awayStats.pointsAgainst : '—'} PA
             &nbsp;·&nbsp;
             ${homeStats.season} ${home.team.abbreviation}: ${homeStats.wins || 0}-${homeStats.losses || 0}, ${homeStats.pointsFor != null ? homeStats.pointsFor : '—'} PF / ${homeStats.pointsAgainst != null ? homeStats.pointsAgainst : '—'} PA
@@ -366,18 +347,64 @@ async function toggleMatchup(card, ev, home, away) {
             ${weather && weather.displayValue ? `<br>${weather.displayValue}${weather.temperature != null ? `, ${weather.temperature}°F` : ''} at kickoff` : ''}
           </div>
         </div>
-        <div class="edge-comparison"></div>
-        ${oddsHTML}
+        <div class="forecast-save edge-comparison"></div>
+        <details class="market-panel"><summary>Optional: compare with Kalshi</summary><div class="market-content"></div></details>
       </div>
     `;
-    mountComparison(slot.querySelector('.edge-comparison'), {
-      market: kalshiML, forecast, homeWinProb, awayWinProb, gameDate, gameId: ev.id,
-      home: home.team.abbreviation, away: away.team.abbreviation, homeStats, awayStats,
-      refresh: () => { slot.dataset.open = 'false'; toggleMatchup(card, ev, home, away); }
+    const context = { forecast, homeWinProb, awayWinProb, gameDate, gameId: String(ev.id || ''), gameState: comp.status.type.state,
+      home: home.team.abbreviation, away: away.team.abbreviation, homeStats, awayStats };
+    mountForecastSave(slot.querySelector('.forecast-save'), context);
+    const panel = slot.querySelector('.market-panel');
+    panel.addEventListener('click', event => event.stopPropagation());
+    let marketLoaded = false;
+    panel.addEventListener('toggle', () => {
+      if (!panel.open || marketLoaded) return;
+      marketLoaded = true;
+      loadMarketComparison(panel.querySelector('.market-content'), context, home, away, gameDate);
     });
   } catch (err) {
     if (slot.dataset.open !== 'true' || slot.dataset.request !== requestId) return;
     slot.innerHTML = `<div class="error-box">Couldn't compute this matchup: ${err.message}</div>`;
+  }
+}
+
+async function loadMarketComparison(element, context, home, away, gameDate) {
+  element.innerHTML = '<div class="status">Loading optional market data…</div>';
+  try {
+    const [kalshiML, kalshiSpread, kalshiTotal] = await Promise.all([
+      getKalshiOdds(away.team.abbreviation, home.team.abbreviation, gameDate),
+      getKalshiSpread(away.team.abbreviation, home.team.abbreviation, gameDate),
+      getKalshiTotal(away.team.abbreviation, home.team.abbreviation, gameDate)
+    ]);
+
+    let oddsHTML = '';
+    if ((kalshiSpread && kalshiSpread.available) || (kalshiTotal && kalshiTotal.available)) {
+      const spreadLine = kalshiSpread && kalshiSpread.available ? kalshiSpread.lines[0] : null;
+      const totalLine = kalshiTotal && kalshiTotal.available ? kalshiTotal.lines[0] : null;
+      oddsHTML = `
+        <div class="odds-section">
+          <h3>Live Kalshi line</h3>
+          <div class="odds-grid">
+            <div class="odds-col">
+              <div class="label">Spread</div>
+              <div class="line">${spreadLine ? `${spreadLine.favoredTeam} -${spreadLine.line}` : '—'}</div>
+            </div>
+            <div class="odds-col">
+              <div class="label">Total</div>
+              <div class="line">O/U ${totalLine ? totalLine.line : '—'}</div>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+
+    if (!element.isConnected) return;
+    element.innerHTML = `<div class="edge-comparison"></div>${oddsHTML}`;
+    mountComparison(element.querySelector('.edge-comparison'), { ...context, market: kalshiML,
+      refresh: () => loadMarketComparison(element, context, home, away, gameDate) });
+  } catch {
+    element.textContent = 'Market data could not be loaded. Your probability estimate is still available.';
   }
 }
 
@@ -390,6 +417,7 @@ document.getElementById('nextWeek').addEventListener('click', () => {
   loadGames();
 });
 
+initForecastLog(document.getElementById("forecastLog"));
 initPaperLog(document.getElementById("paperLog"));
 loadGames();
 </script>
