@@ -154,7 +154,6 @@ async function loadGames() {
       const home = comp.competitors.find(c => c.homeAway === 'home');
       const away = comp.competitors.find(c => c.homeAway === 'away');
       const statusState = comp.status.type.state;
-      const oddsBlock = comp.odds && comp.odds[0];
 
       const card = document.createElement('div');
       card.className = 'game-card';
@@ -182,10 +181,9 @@ async function loadGames() {
           </div>
           <span class="score">${statusState !== 'pre' ? home.score : ''}</span>
         </div>
-        ${oddsBlock ? `<div class="odds-line"><span>${oddsBlock.details || ''}</span><span>O/U ${oddsBlock.overUnder || '—'}</span></div>` : ''}
         <div class="matchup-slot"></div>
       `;
-      card.addEventListener('click', () => toggleMatchup(card, ev, home, away, oddsBlock));
+      card.addEventListener('click', () => toggleMatchup(card, ev, home, away));
       container.appendChild(card);
     });
   } catch (err) {
@@ -255,7 +253,29 @@ function blendPct(overall, pyth, split) {
   return w > 0 ? sum/w : 0.5;
 }
 
-async function toggleMatchup(card, ev, home, away, oddsBlock) {
+async function getKalshiOdds(awayAbbr, homeAbbr) {
+  try {
+    return await fetchJSON(`/api/kalshi-odds?away=${awayAbbr}&home=${homeAbbr}`);
+  } catch (e) {
+    return null;
+  }
+}
+async function getKalshiSpread(awayAbbr, homeAbbr) {
+  try {
+    return await fetchJSON(`/api/kalshi-spread?away=${awayAbbr}&home=${homeAbbr}`);
+  } catch (e) {
+    return null;
+  }
+}
+async function getKalshiTotal(awayAbbr, homeAbbr) {
+  try {
+    return await fetchJSON(`/api/kalshi-total?away=${awayAbbr}&home=${homeAbbr}`);
+  } catch (e) {
+    return null;
+  }
+}
+
+async function toggleMatchup(card, ev, home, away) {
   const slot = card.querySelector('.matchup-slot');
   if (slot.dataset.open === 'true') {
     slot.innerHTML = '';
@@ -308,18 +328,20 @@ async function toggleMatchup(card, ev, home, away, oddsBlock) {
       homeWinProb = homeWinProb * 0.85 + 0.5 * 0.15;
     }
 
-    let vegasHomeProb = null;
-    if (oddsBlock && oddsBlock.moneyline) {
-      const homeOdds = oddsBlock.moneyline.home && oddsBlock.moneyline.home.close && oddsBlock.moneyline.home.close.odds;
-      const awayOdds = oddsBlock.moneyline.away && oddsBlock.moneyline.away.close && oddsBlock.moneyline.away.close.odds;
-      const hImp = americanToImplied(homeOdds);
-      const aImp = americanToImplied(awayOdds);
-      if (hImp !== null && aImp !== null) {
-        vegasHomeProb = hImp / (hImp + aImp);
-      }
+    // Live Kalshi pricing — fetched fresh each time a matchup is opened.
+    const [kalshiML, kalshiSpread, kalshiTotal] = await Promise.all([
+      getKalshiOdds(away.team.abbreviation, home.team.abbreviation),
+      getKalshiSpread(away.team.abbreviation, home.team.abbreviation),
+      getKalshiTotal(away.team.abbreviation, home.team.abbreviation)
+    ]);
+
+    let kalshiHomeProb = null;
+    if (kalshiML && kalshiML.available) {
+      if (kalshiML.yesTeam === home.team.abbreviation) kalshiHomeProb = kalshiML.yesProb;
+      else if (kalshiML.yesTeam === away.team.abbreviation) kalshiHomeProb = 1 - kalshiML.yesProb;
     }
-    if (vegasHomeProb !== null) {
-      homeWinProb = homeWinProb * 0.6 + vegasHomeProb * 0.4;
+    if (kalshiHomeProb !== null) {
+      homeWinProb = homeWinProb * 0.6 + kalshiHomeProb * 0.4;
     }
 
     const awayWinProb = 1 - homeWinProb;
@@ -327,18 +349,20 @@ async function toggleMatchup(card, ev, home, away, oddsBlock) {
     const awayPct = 100 - homePct;
 
     let oddsHTML = '';
-    if (oddsBlock) {
+    if ((kalshiSpread && kalshiSpread.available) || (kalshiTotal && kalshiTotal.available)) {
+      const spreadLine = kalshiSpread && kalshiSpread.available ? kalshiSpread.lines[0] : null;
+      const totalLine = kalshiTotal && kalshiTotal.available ? kalshiTotal.lines[0] : null;
       oddsHTML = `
         <div class="odds-section">
-          <h3>Sportsbook line (via ESPN)</h3>
+          <h3>Live Kalshi line</h3>
           <div class="odds-grid">
             <div class="odds-col">
               <div class="label">Spread</div>
-              <div class="line">${oddsBlock.details || '—'}</div>
+              <div class="line">${spreadLine ? `${spreadLine.favoredTeam} -${spreadLine.line}` : '—'}</div>
             </div>
             <div class="odds-col">
               <div class="label">Total</div>
-              <div class="line">O/U ${oddsBlock.overUnder != null ? oddsBlock.overUnder : '—'}</div>
+              <div class="line">O/U ${totalLine ? totalLine.line : '—'}</div>
             </div>
           </div>
         </div>
@@ -365,7 +389,7 @@ async function toggleMatchup(card, ev, home, away, oddsBlock) {
             <div class="home-fill" style="width:${homePct}%"></div>
           </div>
           <div class="probbar-caption">
-            Chance to win — based on point differential, record, and home/away form${vegasHomeProb !== null ? ', blended with the sportsbook line' : ''}.<br>
+            Chance to win — based on point differential, record, and home/away form${kalshiHomeProb !== null ? ', blended with live Kalshi market pricing' : ''}.<br>
             ${away.team.abbreviation}: ${awayStats.wins || 0}-${awayStats.losses || 0}, ${awayStats.pointsFor != null ? awayStats.pointsFor : '—'} PF / ${awayStats.pointsAgainst != null ? awayStats.pointsAgainst : '—'} PA
             &nbsp;·&nbsp;
             ${home.team.abbreviation}: ${homeStats.wins || 0}-${homeStats.losses || 0}, ${homeStats.pointsFor != null ? homeStats.pointsFor : '—'} PF / ${homeStats.pointsAgainst != null ? homeStats.pointsAgainst : '—'} PA
