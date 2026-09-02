@@ -172,6 +172,87 @@
   .bar .fill-away { background: linear-gradient(90deg, var(--pigskin), var(--pigskin-light)); }
   .bar .fill-home { background: linear-gradient(90deg, var(--gold), #F0C27E); }
 
+  summary.game-summary {
+    list-style: none;
+    cursor: pointer;
+  }
+
+  summary.game-summary::-webkit-details-marker { display: none; }
+
+  .kickoff {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .chevron {
+    color: var(--ink-soft);
+    font-size: 10px;
+    transition: transform 0.15s ease;
+  }
+
+  details[open] .chevron { transform: rotate(180deg); }
+
+  .odds-panel {
+    border-top: 1px solid var(--line);
+    margin-top: 12px;
+    padding-top: 12px;
+  }
+
+  .odds-status {
+    font-size: 12.5px;
+    color: var(--ink-soft);
+    text-align: center;
+    padding: 6px 4px;
+    line-height: 1.5;
+  }
+
+  .odds-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+
+  .odds-col {
+    text-align: center;
+    padding: 10px 8px;
+    border-radius: 10px;
+    background: var(--night);
+    border: 1.5px solid var(--line);
+  }
+
+  .odds-col.edge-pos { background: var(--gold-soft); border-color: var(--gold); }
+  .odds-col.edge-neg { background: rgba(217, 88, 74, 0.14); border-color: var(--flag); }
+
+  .odds-abbr {
+    font-size: 10px;
+    color: var(--ink-soft);
+    letter-spacing: 0.5px;
+  }
+
+  .odds-implied {
+    font-size: 19px;
+    font-weight: 700;
+    margin: 5px 0 4px;
+  }
+
+  .odds-edge {
+    font-size: 10.5px;
+    color: var(--ink-soft);
+    line-height: 1.4;
+  }
+
+  .odds-col.edge-pos .odds-edge { color: var(--gold); font-weight: 600; }
+  .odds-col.edge-neg .odds-edge { color: var(--flag); }
+
+  .odds-caption {
+    font-size: 10px;
+    color: var(--ink-soft);
+    text-align: center;
+    margin-top: 10px;
+    line-height: 1.5;
+  }
+
   footer {
     max-width: 60ch;
     margin: 24px auto 0;
@@ -198,6 +279,11 @@
 
 <script type="module">
   import { matchupProbability } from './model.js';
+  import { estimateEdge } from './edge.js';
+
+  // Defaults for the edge comparison — same values used in the repo's own
+  // edge.test.js fixture, not arbitrary picks.
+  const EDGE_CONFIG = { quantity: 100, bufferCents: 1, minEdgePoints: 5 };
 
   async function fetchJSON(url) {
     const r = await fetch(url);
@@ -229,11 +315,12 @@
     return stats.ties ? `${stats.wins}-${stats.losses}-${stats.ties}` : `${stats.wins}-${stats.losses}`;
   }
 
-  function teamMeta(competitor) {
+  function teamMeta(competitor, stats) {
     return {
       abbr: competitor.team.abbreviation,
       name: competitor.team.shortDisplayName ?? competitor.team.name,
       color: competitor.team.color ? `#${competitor.team.color}` : null,
+      gamesPlayed: stats?.gamesPlayed ?? 0,
     };
   }
 
@@ -257,8 +344,8 @@
       );
 
       return {
-        away: { ...teamMeta(awayC), record: recordStr(awayStats) },
-        home: { ...teamMeta(homeC), record: recordStr(homeStats) },
+        away: { ...teamMeta(awayC, awayStats), record: recordStr(awayStats) },
+        home: { ...teamMeta(homeC, homeStats), record: recordStr(homeStats) },
         kickoff,
         homeWinProb,
       };
@@ -292,16 +379,91 @@
     const awayPct = 100 - homePct;
 
     return `
-      <div class="game-card">
-        <div class="kickoff mono">${formatKickoff(g.kickoff)}</div>
-        ${teamRow(g.away, awayPct, 'away')}
-        <div class="bar">
-          <div class="fill-away" style="width:${awayPct}%"></div>
-          <div class="fill-home" style="width:${homePct}%"></div>
-        </div>
-        ${teamRow(g.home, homePct, 'home')}
-      </div>
+      <details class="game-card">
+        <summary class="game-summary">
+          <div class="kickoff mono">${formatKickoff(g.kickoff)} <span class="chevron">▾</span></div>
+          ${teamRow(g.away, awayPct, 'away')}
+          <div class="bar">
+            <div class="fill-away" style="width:${awayPct}%"></div>
+            <div class="fill-home" style="width:${homePct}%"></div>
+          </div>
+          ${teamRow(g.home, homePct, 'home')}
+        </summary>
+        <div class="odds-panel" data-loaded="false"></div>
+      </details>
     `;
+  }
+
+  // Kalshi quotes a "yes" contract on each team; mid of bid/ask is our
+  // best read of the market-implied probability. Falls back to whichever
+  // side of the book is actually posted if only one is.
+  function impliedProb(quote) {
+    if (!quote) return null;
+    if (quote.ask !== null && quote.bid !== null) return (quote.ask + quote.bid) / 2;
+    return quote.ask ?? quote.bid ?? null;
+  }
+
+  function edgeFor(quote, probability, oddsData, game) {
+    if (!quote) return { text: 'No active quote', cls: '' };
+    const result = estimateEdge({
+      probability,
+      quote,
+      fee: oddsData.fee,
+      ...EDGE_CONFIG,
+      fetchedAt: oddsData.fetchedAt,
+      gameDate: game.kickoff,
+      gamesPlayed: [game.away.gamesPlayed, game.home.gamesPlayed],
+    });
+    if (result.netEdge === null) return { text: result.reason, cls: '' };
+    const pts = (result.netEdge * 100).toFixed(1);
+    const sign = result.netEdge >= 0 ? '+' : '';
+    return {
+      text: `${sign}${pts} pts · ${result.reason}`,
+      cls: result.eligible ? 'edge-pos' : (result.netEdge < 0 ? 'edge-neg' : ''),
+    };
+  }
+
+  function renderOddsPanel(oddsData, game) {
+    if (!oddsData.available) {
+      return `<div class="odds-status">${oddsData.reason ?? 'No Kalshi market for this game yet.'}</div>`;
+    }
+
+    const awayImplied = impliedProb(oddsData.away);
+    const homeImplied = impliedProb(oddsData.home);
+    const awayEdge = edgeFor(oddsData.away, 1 - game.homeWinProb, oddsData, game);
+    const homeEdge = edgeFor(oddsData.home, game.homeWinProb, oddsData, game);
+
+    return `
+      <div class="odds-grid">
+        <div class="odds-col ${awayEdge.cls}">
+          <div class="odds-abbr mono">${game.away.abbr} · Kalshi</div>
+          <div class="odds-implied mono">${awayImplied !== null ? Math.round(awayImplied * 100) + '%' : '—'}</div>
+          <div class="odds-edge">${awayEdge.text}</div>
+        </div>
+        <div class="odds-col ${homeEdge.cls}">
+          <div class="odds-abbr mono">${game.home.abbr} · Kalshi</div>
+          <div class="odds-implied mono">${homeImplied !== null ? Math.round(homeImplied * 100) + '%' : '—'}</div>
+          <div class="odds-edge">${homeEdge.text}</div>
+        </div>
+      </div>
+      <div class="odds-caption">Kalshi-implied probability vs. the model above; edge is in probability points after estimated fees and a 1¢/contract buffer, at 100 contracts.</div>
+    `;
+  }
+
+  async function handleToggle(details, game) {
+    if (!details.open) return;
+    const panel = details.querySelector('.odds-panel');
+    if (panel.dataset.loaded === 'true') return;
+    panel.dataset.loaded = 'true';
+    panel.innerHTML = '<div class="odds-status">Loading Kalshi odds…</div>';
+    try {
+      const params = new URLSearchParams({ away: game.away.abbr, home: game.home.abbr, gameDate: game.kickoff });
+      const oddsData = await fetchJSON(`/api/kalshi-odds?${params}`);
+      panel.innerHTML = renderOddsPanel(oddsData, game);
+    } catch (err) {
+      panel.dataset.loaded = 'false';
+      panel.innerHTML = `<div class="odds-status">Couldn't load odds — ${err.message}</div>`;
+    }
   }
 
   function render(games) {
@@ -311,6 +473,9 @@
       return;
     }
     container.innerHTML = games.map(renderGame).join('');
+    container.querySelectorAll('.game-card').forEach((el, i) => {
+      el.addEventListener('toggle', () => handleToggle(el, games[i]));
+    });
   }
 
   (async () => {
