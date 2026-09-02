@@ -316,11 +316,6 @@
 
 <script type="module">
   import { matchupProbability } from './model.js';
-  import { estimateEdge } from './edge.js';
-
-  // Defaults for the edge comparison — same values used in the repo's own
-  // edge.test.js fixture, not arbitrary picks.
-  const EDGE_CONFIG = { quantity: 100, bufferCents: 1, minEdgePoints: 5 };
 
   async function fetchJSON(url) {
     const r = await fetch(url);
@@ -352,12 +347,11 @@
     return stats.ties ? `${stats.wins}-${stats.losses}-${stats.ties}` : `${stats.wins}-${stats.losses}`;
   }
 
-  function teamMeta(competitor, stats) {
+  function teamMeta(competitor) {
     return {
       abbr: competitor.team.abbreviation,
       name: competitor.team.shortDisplayName ?? competitor.team.name,
       color: competitor.team.color ? `#${competitor.team.color}` : null,
-      gamesPlayed: stats?.gamesPlayed ?? 0,
     };
   }
 
@@ -381,8 +375,8 @@
       );
 
       return {
-        away: { ...teamMeta(awayC, awayStats), record: recordStr(awayStats) },
-        home: { ...teamMeta(homeC, homeStats), record: recordStr(homeStats) },
+        away: { ...teamMeta(awayC), record: recordStr(awayStats) },
+        home: { ...teamMeta(homeC), record: recordStr(homeStats) },
         kickoff,
         homeWinProb,
       };
@@ -440,24 +434,16 @@
     return quote.ask ?? quote.bid ?? null;
   }
 
-  function edgeFor(quote, probability, oddsData, game) {
-    if (!quote) return { text: 'No active quote', cls: '' };
-    const result = estimateEdge({
-      probability,
-      quote,
-      fee: oddsData.fee,
-      ...EDGE_CONFIG,
-      fetchedAt: oddsData.fetchedAt,
-      gameDate: game.kickoff,
-      gamesPlayed: [game.away.gamesPlayed, game.home.gamesPlayed],
-    });
-    if (result.netEdge === null) return { text: result.reason, cls: '' };
-    const pts = (result.netEdge * 100).toFixed(1);
-    const sign = result.netEdge >= 0 ? '+' : '';
-    return {
-      text: `${sign}${pts} pts · ${result.reason}`,
-      cls: result.eligible ? 'edge-pos' : (result.netEdge < 0 ? 'edge-neg' : ''),
-    };
+  function edgeFor(quote, modelPct) {
+    if (!quote) return { text: 'No active quote', cls: '', implied: null };
+    const implied = impliedProb(quote);
+    if (implied === null) return { text: 'No active quote', cls: '', implied: null };
+    const impliedPct = Math.round(implied * 100);
+    const diff = modelPct - impliedPct;
+    const sign = diff > 0 ? '+' : '';
+    const cls = diff > 0 ? 'edge-pos' : diff < 0 ? 'edge-neg' : '';
+    const text = diff === 0 ? 'Matches model' : `Model ${sign}${diff} pt${Math.abs(diff) === 1 ? '' : 's'}`;
+    return { text, cls, implied: impliedPct };
   }
 
   function renderOddsPanel(oddsData, game) {
@@ -465,26 +451,26 @@
       return `<div class="odds-status">${oddsData.reason ?? 'No Kalshi market for this game yet.'}</div>`;
     }
 
-    const awayImplied = impliedProb(oddsData.away);
-    const homeImplied = impliedProb(oddsData.home);
-    const awayEdge = edgeFor(oddsData.away, 1 - game.homeWinProb, oddsData, game);
-    const homeEdge = edgeFor(oddsData.home, game.homeWinProb, oddsData, game);
+    const homePct = Math.round(game.homeWinProb * 100);
+    const awayPct = 100 - homePct;
+    const away = edgeFor(oddsData.away, awayPct);
+    const home = edgeFor(oddsData.home, homePct);
 
     return `
       <div class="odds-caption" style="margin-top:0;margin-bottom:6px;">Kalshi odds</div>
       <div class="odds-grid">
-        <div class="odds-col ${awayEdge.cls}">
+        <div class="odds-col ${away.cls}">
           <div class="odds-abbr mono">${game.away.abbr}</div>
-          <div class="odds-implied mono">${awayImplied !== null ? Math.round(awayImplied * 100) + '%' : '—'}</div>
-          <div class="odds-edge">${awayEdge.text}</div>
+          <div class="odds-implied mono">${away.implied !== null ? away.implied + '%' : '—'}</div>
+          <div class="odds-edge">${away.text}</div>
         </div>
-        <div class="odds-col ${homeEdge.cls}">
+        <div class="odds-col ${home.cls}">
           <div class="odds-abbr mono">${game.home.abbr}</div>
-          <div class="odds-implied mono">${homeImplied !== null ? Math.round(homeImplied * 100) + '%' : '—'}</div>
-          <div class="odds-edge">${homeEdge.text}</div>
+          <div class="odds-implied mono">${home.implied !== null ? home.implied + '%' : '—'}</div>
+          <div class="odds-edge">${home.text}</div>
         </div>
       </div>
-      <div class="odds-caption">vs. model above · edge in pts after fees, 1¢ buffer, 100 contracts</div>
+      <div class="odds-caption">Kalshi-implied probability vs. model — for comparison only, not used in the model itself</div>
     `;
   }
 
