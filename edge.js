@@ -1,4 +1,4 @@
-export const MODEL_VERSION = 'season-form-v1-date-cutoff';
+export { MODEL_VERSION } from './model.js';
 export const MAX_QUOTE_AGE_MS = 60000;
 export function estimateEdge({ probability, quote, fee, quantity, bufferCents, minEdgePoints, fetchedAt, gameDate, gamesPlayed, now = Date.now() }) {
   const invalid = reason => ({ eligible: false, reason, netEdge: null, feeTotal: null, cost: null });
@@ -16,7 +16,7 @@ export function estimateEdge({ probability, quote, fee, quantity, bufferCents, m
   const netEdge = probability - cost / quantity;
   const result = { feeTotal, cost, netEdge, eligible: false };
   if (!Number.isFinite(Date.parse(gameDate)) || Date.parse(gameDate) <= now) return { ...result, reason: 'Pregame signals only' };
-  if (!Array.isArray(gamesPlayed) || gamesPlayed.length !== 2 || gamesPlayed.some(n => !Number.isFinite(n) || n < 4)) return { ...result, reason: 'Limited season data — paper research only' };
+  if (!Array.isArray(gamesPlayed) || gamesPlayed.length !== 2 || gamesPlayed.some(n => !Number.isFinite(n) || n < 4)) return { ...result, reason: 'Limited historical and current data — paper research only' };
   if (!Number.isFinite(quote.askSize) || quote.askSize < quantity) return { ...result, reason: 'Insufficient quoted size' };
   if (Number.isFinite(quote.bid) && quote.bid > quote.ask) return { ...result, reason: 'Inconsistent quote — refresh matchup' };
   return { ...result, eligible: netEdge > 0 && netEdge * 100 >= minEdgePoints,

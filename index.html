@@ -129,7 +129,7 @@
 
 <header>
   <h1>Gridiron</h1>
-  <p>Estimates NFL win probability from season point differential and home/away form, with live Kalshi pricing shown alongside for comparison.</p>
+  <p>Estimates NFL win probability from current and previous-season performance, with live Kalshi pricing shown alongside for comparison.</p>
 </header>
 
 <div class="weekbar">
@@ -144,11 +144,12 @@
 </main>
 
 <footer>
-  Model estimates win probability from season point differential (Pythagorean win expectation), overall record, and home/away splits — Kalshi's live market pricing is shown alongside for comparison, not folded into the number. Not a guarantee, and it doesn't see injuries or coaching matchups yet. Data comes from ESPN's public but unofficial API and Kalshi's public market data, either of which could change without notice. Use it as one input, not the whole decision.
+  Model combines current-season form with a previous-season baseline pulled toward league average, using point differential, record, and home/away splits — Kalshi's live market pricing is shown alongside for comparison, not folded into the number. Not a guarantee, and it doesn't see injuries or coaching matchups yet. Data comes from ESPN's public but unofficial API and Kalshi's public market data, either of which could change without notice. Use it as one input, not the whole decision.
 </footer>
 
 <script type="module">
 import { mountComparison, initPaperLog } from "./paper.js";
+import { matchupProbability } from "./model.js";
 let currentSeason = 2026;
 let currentSeasonType = 2;
 let currentWeek = 1;
@@ -247,54 +248,6 @@ function americanToImplied(odds) {
   return n > 0 ? 100/(n+100) : -n/(-n+100);
 }
 
-// NFL divisions are fixed for the season — stable public knowledge, not from an API.
-const NFL_DIVISIONS = {
-  2: 'AFC East', 15: 'AFC East', 17: 'AFC East', 20: 'AFC East',
-  33: 'AFC North', 4: 'AFC North', 5: 'AFC North', 23: 'AFC North',
-  34: 'AFC South', 11: 'AFC South', 30: 'AFC South', 10: 'AFC South',
-  7: 'AFC West', 12: 'AFC West', 13: 'AFC West', 24: 'AFC West',
-  6: 'NFC East', 19: 'NFC East', 21: 'NFC East', 28: 'NFC East',
-  3: 'NFC North', 8: 'NFC North', 9: 'NFC North', 16: 'NFC North',
-  1: 'NFC South', 29: 'NFC South', 18: 'NFC South', 27: 'NFC South',
-  22: 'NFC West', 14: 'NFC West', 25: 'NFC West', 26: 'NFC West'
-};
-
-function isDivisionalGame(teamIdA, teamIdB) {
-  const divA = NFL_DIVISIONS[teamIdA];
-  const divB = NFL_DIVISIONS[teamIdB];
-  return divA && divB && divA === divB;
-}
-
-function restPenalty(daysRest) {
-  // Standard NFL rest is ~6-7 days. Short week (Thursday games, 3-4 days) is a real,
-  // well-documented effect. Long rest beyond a bye isn't penalized — too ambiguous either way.
-  if (daysRest === null || daysRest === undefined) return 0;
-  if (daysRest <= 4) return 0.03; // shifts win prob slightly against the short-rested team
-  return 0;
-}
-
-function pythPct(pf, pa) {
-  if (pf == null || pa == null || pf + pa <= 0) return null;
-  const p = 2.37;
-  const pf2 = Math.pow(pf, p), pa2 = Math.pow(pa, p);
-  return pf2 / (pf2 + pa2);
-}
-
-function log5(pctA, pctB) {
-  const num = pctA - pctA*pctB;
-  const den = pctA + pctB - 2*pctA*pctB;
-  return den === 0 ? 0.5 : num/den;
-}
-
-function blendPct(overall, pyth, split) {
-  let sum = 0, w = 0;
-  const add = (v, weight) => { if (v !== null && v !== undefined && !isNaN(v)) { sum += v*weight; w += weight; } };
-  add(overall, 0.30);
-  add(pyth, 0.55);
-  add(split, 0.15);
-  return w > 0 ? sum/w : 0.5;
-}
-
 async function getKalshiOdds(awayAbbr, homeAbbr, gameDate) {
   try {
     return await fetchJSON(`/api/kalshi-odds?away=${awayAbbr}&home=${homeAbbr}&gameDate=${encodeURIComponent(gameDate)}`);
@@ -317,6 +270,12 @@ async function getKalshiTotal(awayAbbr, homeAbbr, gameDate) {
   }
 }
 
+function historyCaption(team, stats, model) {
+  if (model.neutralFallback) return `${team}: no usable game history — neutral fallback${model.dataWarning ? '; previous-season source unavailable' : ''}`;
+  const history = model.hasHistory ? `${model.priorSeason} record ${stats.previousSeason.wins}-${stats.previousSeason.losses}-${stats.previousSeason.ties} (${model.priorGames} games)` : 'league-average baseline; previous season unavailable or empty';
+  return `${team}: ${history}. Current form ${(model.currentWeight * 100).toFixed(0)}% · baseline ${((1 - model.currentWeight) * 100).toFixed(0)}%.${model.dataWarning ? ' Previous-season data could not be loaded.' : ''}${model.currentGames === 0 ? ' Early-season estimate; offseason roster changes are not modeled.' : ''}`;
+}
+
 async function toggleMatchup(card, ev, home, away) {
   const slot = card.querySelector('.matchup-slot');
   if (slot.dataset.open === 'true') {
@@ -333,44 +292,15 @@ async function toggleMatchup(card, ev, home, away) {
   try {
     const gameDate = ev.competitions[0].date;
     const [awayStats, homeStats] = await Promise.all([
-      fetchJSON(`/api/team-schedule?teamId=${away.team.id}&season=${currentSeason}&beforeDate=${encodeURIComponent(gameDate)}`),
-      fetchJSON(`/api/team-schedule?teamId=${home.team.id}&season=${currentSeason}&beforeDate=${encodeURIComponent(gameDate)}`)
+      fetchJSON(`/api/team-schedule?teamId=${away.team.id}&season=${currentSeason}&beforeDate=${encodeURIComponent(gameDate)}&model=history-v2`),
+      fetchJSON(`/api/team-schedule?teamId=${home.team.id}&season=${currentSeason}&beforeDate=${encodeURIComponent(gameDate)}&model=history-v2`)
     ]);
 
-    function recPct(stats) {
-      if (!stats.available || stats.gamesPlayed === 0) return null;
-      return (stats.wins + 0.5 * (stats.ties || 0)) / stats.gamesPlayed;
-    }
-    function splitPct(stats, isHome) {
-      const rec = isHome ? stats.homeRecord : stats.awayRecord;
-      const total = rec.wins + rec.losses + (rec.ties || 0);
-      return total > 0 ? (rec.wins + 0.5 * (rec.ties || 0)) / total : null;
-    }
-
-    const awayOverall = recPct(awayStats);
-    const homeOverall = recPct(homeStats);
-    const awayPyth = pythPct(awayStats.pointsFor, awayStats.pointsAgainst);
-    const homePyth = pythPct(homeStats.pointsFor, homeStats.pointsAgainst);
-    const awaySplit = splitPct(awayStats, false);
-    const homeSplit = splitPct(homeStats, true);
-
-    const awayBlend = blendPct(awayOverall, awayPyth, awaySplit);
-    const homeBlend = blendPct(homeOverall, homePyth, homeSplit);
-
-    let homeWinProb = log5(homeBlend, awayBlend);
-
-    // Short-rest penalty: nudges win prob slightly against whichever team is on short rest.
-    const awayRestPenalty = restPenalty(awayStats.daysRest);
-    const homeRestPenalty = restPenalty(homeStats.daysRest);
-    homeWinProb = homeWinProb - homeRestPenalty + awayRestPenalty;
-    homeWinProb = Math.min(0.97, Math.max(0.03, homeWinProb));
-
-    // Existing heuristic: divisional estimates are pulled toward 50/50.
-    // This adjustment has not been calibrated or validated on held-out games.
-    const divisional = isDivisionalGame(away.team.id, home.team.id);
-    if (divisional) {
-      homeWinProb = homeWinProb * 0.85 + 0.5 * 0.15;
-    }
+    if (awayStats.dataVersion !== 2 || homeStats.dataVersion !== 2) throw new Error('Historical data update is not deployed yet. Please refresh after updating the API.');
+    const forecast = matchupProbability(homeStats, awayStats, home.team.abbreviation, away.team.abbreviation);
+    const { homeWinProb, awayWinProb, divisional } = forecast;
+    const awayRestPenalty = Number.isFinite(awayStats.daysRest) && awayStats.daysRest <= 4 ? .03 : 0;
+    const homeRestPenalty = Number.isFinite(homeStats.daysRest) && homeStats.daysRest <= 4 ? .03 : 0;
 
     // Live Kalshi pricing — fetched fresh each time a matchup is opened. Used for comparison only,
     // not folded into the displayed probability (that's our model's number alone).
@@ -380,7 +310,6 @@ async function toggleMatchup(card, ev, home, away) {
       getKalshiTotal(away.team.abbreviation, home.team.abbreviation, gameDate)
     ]);
 
-    const awayWinProb = 1 - homeWinProb;
     const homePct = Math.round(homeWinProb * 100);
     const awayPct = 100 - homePct;
 
@@ -409,7 +338,7 @@ async function toggleMatchup(card, ev, home, away) {
     const weather = comp.weather;
 
     let signalNotes = [];
-    if (Math.min(awayStats.gamesPlayed, homeStats.gamesPlayed) < 4) signalNotes.push("limited regular-season data — estimate is unvalidated");
+    if (Math.min(forecast.away.evidenceGames, forecast.home.evidenceGames) < 4) signalNotes.push("limited historical and current data — paper research only");
     if (divisional) signalNotes.push('divisional matchup (pulled slightly toward even)');
     if (awayRestPenalty > 0) signalNotes.push(`${away.team.abbreviation} on short rest (${awayStats.daysRest}d)`);
     if (homeRestPenalty > 0) signalNotes.push(`${home.team.abbreviation} on short rest (${homeStats.daysRest}d)`);
@@ -427,10 +356,12 @@ async function toggleMatchup(card, ev, home, away) {
             <div class="home-fill" style="width:${homePct}%"></div>
           </div>
           <div class="probbar-caption">
-            Model estimate — point differential, record, and home/away form. Ties are not separately modeled.<br>
-            ${away.team.abbreviation}: ${awayStats.wins || 0}-${awayStats.losses || 0}, ${awayStats.pointsFor != null ? awayStats.pointsFor : '—'} PF / ${awayStats.pointsAgainst != null ? awayStats.pointsAgainst : '—'} PA
+            Model estimate — current form plus a previous-season baseline. Ties are not separately modeled.<br>
+            ${awayStats.season} ${away.team.abbreviation}: ${awayStats.wins || 0}-${awayStats.losses || 0}, ${awayStats.pointsFor != null ? awayStats.pointsFor : '—'} PF / ${awayStats.pointsAgainst != null ? awayStats.pointsAgainst : '—'} PA
             &nbsp;·&nbsp;
-            ${home.team.abbreviation}: ${homeStats.wins || 0}-${homeStats.losses || 0}, ${homeStats.pointsFor != null ? homeStats.pointsFor : '—'} PF / ${homeStats.pointsAgainst != null ? homeStats.pointsAgainst : '—'} PA
+            ${homeStats.season} ${home.team.abbreviation}: ${homeStats.wins || 0}-${homeStats.losses || 0}, ${homeStats.pointsFor != null ? homeStats.pointsFor : '—'} PF / ${homeStats.pointsAgainst != null ? homeStats.pointsAgainst : '—'} PA
+            <br>${historyCaption(away.team.abbreviation, awayStats, forecast.away)}
+            <br>${historyCaption(home.team.abbreviation, homeStats, forecast.home)}
             ${signalNotes.length ? `<br>${signalNotes.join(' · ')}` : ''}
             ${weather && weather.displayValue ? `<br>${weather.displayValue}${weather.temperature != null ? `, ${weather.temperature}°F` : ''} at kickoff` : ''}
           </div>
@@ -440,7 +371,7 @@ async function toggleMatchup(card, ev, home, away) {
       </div>
     `;
     mountComparison(slot.querySelector('.edge-comparison'), {
-      market: kalshiML, homeWinProb, awayWinProb, gameDate, gameId: ev.id,
+      market: kalshiML, forecast, homeWinProb, awayWinProb, gameDate, gameId: ev.id,
       home: home.team.abbreviation, away: away.team.abbreviation, homeStats, awayStats,
       refresh: () => { slot.dataset.open = 'false'; toggleMatchup(card, ev, home, away); }
     });

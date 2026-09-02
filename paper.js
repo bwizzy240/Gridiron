@@ -33,7 +33,7 @@ function renderLog() {
     <p role="status">${escapeHTML(storageError)}</p>
     <button id="exportPaper" ${!trades.length ? 'disabled' : ''}>Export records</button>
     <div class="paper-table"><table><thead><tr><th>Contract / saved</th><th>Model / net edge</th><th>Entry / cost</th><th>Settlement payout ($)</th><th>P/L</th></tr></thead><tbody>
-    ${trades.map(t => `<tr><td>${escapeHTML(t.team)} YES<small>${escapeHTML(t.ticker)}</small><small>${escapeHTML(time(t.savedAt))}</small><small>${escapeHTML(t.signal)}</small></td>
+    ${trades.map(t => `<tr><td>${escapeHTML(t.team)} YES<small>${escapeHTML(t.ticker)}</small><small>${escapeHTML(time(t.savedAt))}</small><small>${escapeHTML(t.modelVersion || "Earlier model")}</small><small>${escapeHTML(t.signal)}</small></td>
       <td>${(t.probability * 100).toFixed(1)}%<small>${signed(t.netEdge * 100)} pp</small></td>
       <td>${t.quantity} × ${(t.ask * 100).toFixed(2)}¢<small>Cost ${money(t.cost)}</small><small>Fee ${money(t.feeTotal)} · buffer ${money(t.quantity * t.bufferCents / 100)}</small></td>
       <td><input aria-label="Settlement payout for ${escapeHTML(t.team)} ${escapeHTML(t.savedAt)}" type="number" min="0" max="1" step="0.0001" data-payout="${escapeHTML(t.id)}" value="${t.payout ?? ''}" placeholder="Pending" ${Date.parse(t.gameDate) > Date.now() ? 'disabled' : ''}></td>
@@ -67,7 +67,8 @@ export function mountComparison(root, context) {
     <p>The 5-point threshold and 1¢ buffer are editable research assumptions. Net edge = model estimate − ask − estimated fee per contract − buffer. The model assumes a decisive result; ties and special settlements can change the payout.</p>
     <div class="result" aria-live="polite"></div>
     <p class="freshness"></p><button class="refresh">Refresh matchup</button>
-    <p>Season data fetched: ${escapeHTML(time(awayStats.fetchedAt))} / ${escapeHTML(time(homeStats.fetchedAt))}. Only completed games before this matchup are included. Fewer than four games per team suppresses value flags; four games does not establish model accuracy.</p>
+    <p>Current-season data fetched: ${escapeHTML(time(awayStats.fetchedAt))} / ${escapeHTML(time(homeStats.fetchedAt))}. Only completed regular-season games before this matchup are included. The data check counts each current-season game as one and each previous-season game as half, requiring at least four per team. Passing this check does not establish model accuracy.</p>
+    <p>Previous-season data fetched: ${escapeHTML(time(awayStats.previousSeason?.fetchedAt))} / ${escapeHTML(time(homeStats.previousSeason?.fetchedAt))}. Previous records are softened toward league average; current results gradually replace that baseline. Missing history is explicitly labeled beside the model estimate.</p>
     <p>Fees use the current series multiplier and conservative rounding up to a whole cent per order. Actual fills, sub-cent rounding, and broker fees can differ. <a href="https://kalshi.com/docs/kalshi-fee-schedule.pdf" target="_blank" rel="noopener noreferrer">Kalshi fee schedule</a></p>
     <details><summary>Contract settlement rules</summary><p>${escapeHTML(market.away?.rules || market.home?.rules || 'Unavailable — verify on Kalshi.')}</p></details>
     <p class="save-status" role="status"></p>`;
@@ -78,7 +79,7 @@ export function mountComparison(root, context) {
   });
   function evaluation(side) {
     return estimateEdge({ ...settings(), probability: context[`${side}WinProb`], quote: market[side], fee: market.fee,
-      fetchedAt: market.fetchedAt, gameDate: context.gameDate, gamesPlayed: [awayStats.gamesPlayed, homeStats.gamesPlayed] });
+      fetchedAt: market.fetchedAt, gameDate: context.gameDate, gamesPlayed: [context.forecast.away.evidenceGames, context.forecast.home.evidenceGames] });
   }
   function canRecord(result, quote) {
     return !storageError && result.cost !== null && Date.parse(context.gameDate) > Date.now() &&
@@ -108,7 +109,7 @@ export function mountComparison(root, context) {
         probability: context[`${side}WinProb`], ...settings(), ask: quote.ask, bid: quote.bid, askSize: quote.askSize,
         feeSchedule: market.fee, feeTotal: result.feeTotal, cost: result.cost, netEdge: result.netEdge,
         signal: result.reason, flagged: result.eligible, quoteFetchedAt: market.fetchedAt,
-        stats: { away: awayStats, home: homeStats }, rules: quote.rules, payout: null };
+        stats: { away: awayStats, home: homeStats }, forecast: context.forecast, rules: quote.rules, payout: null };
       if (saveTrades([...trades, trade])) {
         renderLog(); root.querySelector('.save-status').textContent = `${context[side]} paper entry saved on this browser.`;
       } else root.querySelector('.save-status').textContent = 'Entry could not be saved.';
