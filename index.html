@@ -107,7 +107,7 @@
 
 <header>
   <h1>Gridiron</h1>
-  <p>Estimates NFL win probability from season point differential and home/away form, blended with live Kalshi market pricing.</p>
+  <p>Estimates NFL win probability from season point differential and home/away form, with live Kalshi pricing shown alongside for comparison.</p>
 </header>
 
 <div class="weekbar">
@@ -121,7 +121,7 @@
 </main>
 
 <footer>
-  Model blends season point differential (Pythagorean win expectation), overall record, and home/away splits with live Kalshi market pricing — not a guarantee, and it doesn't see injuries or coaching matchups yet. Data comes from ESPN's public but unofficial API and Kalshi's public market data, either of which could change without notice. Use it as one input, not the whole decision.
+  Model estimates win probability from season point differential (Pythagorean win expectation), overall record, and home/away splits — Kalshi's live market pricing is shown alongside for comparison, not folded into the number. Not a guarantee, and it doesn't see injuries or coaching matchups yet. Data comes from ESPN's public but unofficial API and Kalshi's public market data, either of which could change without notice. Use it as one input, not the whole decision.
 </footer>
 
 <script>
@@ -346,22 +346,18 @@ async function toggleMatchup(card, ev, home, away) {
       homeWinProb = homeWinProb * 0.85 + 0.5 * 0.15;
     }
 
-    // Live Kalshi pricing — fetched fresh each time a matchup is opened.
+    // Live Kalshi pricing — fetched fresh each time a matchup is opened. Used for comparison only,
+    // not folded into the displayed probability (that's our model's number alone).
     const [kalshiML, kalshiSpread, kalshiTotal] = await Promise.all([
       getKalshiOdds(away.team.abbreviation, home.team.abbreviation),
       getKalshiSpread(away.team.abbreviation, home.team.abbreviation),
       getKalshiTotal(away.team.abbreviation, home.team.abbreviation)
     ]);
 
-    const preBlendHomeWinProb = homeWinProb; // our model's own number, before Kalshi is folded in
-
     let kalshiHomeProb = null;
     if (kalshiML && kalshiML.available) {
       if (kalshiML.yesTeam === home.team.abbreviation) kalshiHomeProb = kalshiML.yesProb;
       else if (kalshiML.yesTeam === away.team.abbreviation) kalshiHomeProb = 1 - kalshiML.yesProb;
-    }
-    if (kalshiHomeProb !== null) {
-      homeWinProb = homeWinProb * 0.6 + kalshiHomeProb * 0.4;
     }
 
     const awayWinProb = 1 - homeWinProb;
@@ -397,8 +393,8 @@ async function toggleMatchup(card, ev, home, away) {
       const awayOddsStr = awayOddsVal > 0 ? `+${awayOddsVal}` : `${awayOddsVal}`;
       const homeOddsStr = homeOddsVal > 0 ? `+${homeOddsVal}` : `${homeOddsVal}`;
 
-      const awayEdge = ((1 - preBlendHomeWinProb) - kalshiAwayProb) * 100;
-      const homeEdge = (preBlendHomeWinProb - kalshiHomeProb) * 100;
+      const awayEdge = ((1 - homeWinProb) - kalshiAwayProb) * 100;
+      const homeEdge = (homeWinProb - kalshiHomeProb) * 100;
 
       function resultCol(abbr, implied, edge) {
         const edgeClass = edge > 0 ? 'edge-pos' : (edge < 0 ? 'edge-neg' : '');
@@ -448,7 +444,7 @@ async function toggleMatchup(card, ev, home, away) {
             <div class="home-fill" style="width:${homePct}%"></div>
           </div>
           <div class="probbar-caption">
-            Chance to win — based on point differential, record, and home/away form${kalshiHomeProb !== null ? ', blended with live Kalshi market pricing' : ''}.<br>
+            Chance to win — based on point differential, record, and home/away form.<br>
             ${away.team.abbreviation}: ${awayStats.wins || 0}-${awayStats.losses || 0}, ${awayStats.pointsFor != null ? awayStats.pointsFor : '—'} PF / ${awayStats.pointsAgainst != null ? awayStats.pointsAgainst : '—'} PA
             &nbsp;·&nbsp;
             ${home.team.abbreviation}: ${homeStats.wins || 0}-${homeStats.losses || 0}, ${homeStats.pointsFor != null ? homeStats.pointsFor : '—'} PF / ${homeStats.pointsAgainst != null ? homeStats.pointsAgainst : '—'} PA
