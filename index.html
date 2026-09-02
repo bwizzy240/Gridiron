@@ -16,7 +16,6 @@
     --line: rgba(255,255,255,0.1);
     --neg: #E15C4C;
     --neg-soft: rgba(225,92,76,0.16);
-    --pos-soft: rgba(79,195,224,0.15);
   }
   * { box-sizing: border-box; }
   body {
@@ -67,7 +66,6 @@
   .team-row .record { font-size: 11px; color: var(--ink-soft); margin-left: 6px; }
   .team-row .score { font-weight: 800; font-size: 16px; }
   .vs-divider { text-align: center; font-size: 10px; color: var(--ink-soft); padding: 2px 0; }
-  .odds-line { display: flex; justify-content: space-between; font-size: 11px; color: var(--ink-soft); margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--line); }
 
   .matchup { background: var(--card); border: 1px solid var(--line); border-radius: 14px; margin-top: 10px; overflow: hidden; box-shadow: 0 4px 14px rgba(0,0,0,0.3); }
   .probbar-wrap { padding: 18px; }
@@ -81,59 +79,15 @@
   .probbar .home-fill { background: linear-gradient(90deg, var(--field), var(--field-light)); }
   .probbar-caption { text-align: center; font-size: 11.5px; color: var(--ink-soft); margin-top: 12px; line-height: 1.5; }
 
-  .odds-section { padding: 0 18px 18px; }
-  .odds-section h3 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px; margin: 0 0 10px; color: var(--ink-soft); }
-  .odds-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px; }
-  .odds-field label { display: block; font-size: 11px; text-transform: uppercase; color: var(--ink-soft); margin-bottom: 5px; font-weight: 600; }
-  .odds-field .value { padding: 11px 12px; font-family: 'SF Mono', ui-monospace, monospace; font-size: 15px; font-weight: 700; border: 1.5px solid var(--line); border-radius: 9px; background: var(--bg); }
-  .result { margin-top: 6px; padding-top: 12px; border-top: 1px dashed var(--line); display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-  .result .col { text-align: center; padding: 12px 8px; border-radius: 10px; background: var(--bg); border: 1.5px solid var(--line); }
-  .result .col.edge-pos { background: var(--pos-soft); border-color: var(--accent); }
-  .result .col.edge-neg { background: var(--neg-soft); border-color: var(--neg); }
-  .result .team-abbr { font-size: 11px; color: var(--ink-soft); text-transform: uppercase; font-weight: 600; }
-  .result .implied { font-size: 22px; font-weight: 800; margin: 6px 0 3px; font-family: 'SF Mono', ui-monospace, monospace; }
-  .result .edge { font-size: 11.5px; }
-  .result .edge.pos { color: var(--accent); font-weight: 700; }
-  .result .edge.neg { color: var(--neg); }
-  .odds-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-  .odds-col { background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 12px; text-align: center; }
-  .odds-col .label { font-size: 11px; color: var(--ink-soft); text-transform: uppercase; }
-  .odds-col .line { font-size: 15px; font-weight: 700; margin: 4px 0; }
-
   footer { max-width: 60ch; margin: 26px auto 0; padding: 0 18px 30px; font-size: 11.5px; color: var(--ink-soft); line-height: 1.6; text-align: center; }
-
-  .paper-log { margin-bottom: 18px; padding: 16px; background: var(--card); border: 1px solid var(--line); border-radius: 12px; }
-  .paper-log summary { cursor: pointer; font-weight: 700; }
-  .paper-log p, .edge-comparison p { font-size: 14px; line-height: 1.5; color: var(--ink-soft); }
-  .edge-comparison { padding: 18px; border-top: 1px solid var(--line); }
-  .edge-comparison h3 { margin: 0 0 12px; font-size: 16px; }
-  .edge-settings { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
-  .edge-settings label { font-size: 14px; display: grid; gap: 6px; }
-  .edge-comparison input, .paper-log select, .paper-log input { width: 100%; min-width: 0; padding: 10px; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; font-size: 16px; }
-  .edge-comparison button, .paper-log button { padding: 10px 12px; color: var(--ink); background: var(--field); border: 1px solid var(--accent); border-radius: 8px; cursor: pointer; font-size: 14px; }
-  button:disabled { opacity: .5; cursor: default; }
-  .edge-comparison .result { margin-top: 14px; }
-  .edge-comparison .team-abbr, .edge-comparison .edge { font-size: 14px; }
-  .edge-comparison details { margin-top: 12px; font-size: 14px; }
-  .edge-comparison details p { white-space: pre-line; }
-  .paper-table { overflow-x: auto; margin-top: 12px; }
-  .paper-table table { width: 100%; border-collapse: collapse; font-size: 14px; }
-  .paper-table th, .paper-table td { padding: 10px; text-align: left; border-bottom: 1px solid var(--line); vertical-align: top; min-width: 90px; }
-  .paper-table small { display: block; margin-top: 5px; color: var(--ink-soft); }
-  .paper-log a, .edge-comparison a { color: var(--accent); }
   :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
-  @media (max-width: 420px) { .edge-settings { grid-template-columns: 1fr; } .edge-comparison .result { grid-template-columns: 1fr; } }
-  .market-panel { border-top: 1px solid var(--line); }
-  .market-panel > summary { padding: 18px; cursor: pointer; font-size: 14px; color: var(--ink-soft); }
-  .forecast-save { padding-top: 12px; }
-  .paper-table caption { text-align: left; padding: 10px; font-weight: 600; }
 </style>
 </head>
 <body>
 
 <header>
   <h1>Gridiron</h1>
-  <p>Estimate pregame win probabilities, record forecasts, and measure how well they match results.</p>
+  <p>Estimate pregame win probabilities for NFL matchups based on current and prior-season team strength.</p>
 </header>
 
 <div class="weekbar">
@@ -143,23 +97,15 @@
 </div>
 
 <main>
-  <section id="forecastLog" class="paper-log" aria-label="Forecast journal"></section>
-  <details class="paper-log"><summary>Model quality · historical evidence</summary>
-    <p>The current model scored 0.2185 Brier and 0.6276 log loss on 543 decisive games from 2024–2025. Lower is better. This retrospective check supports further testing; it does not establish precise calibration.</p>
-    <p><a href="./MODEL-QUALITY.md" target="_blank" rel="noopener">Read the model comparison and limitations</a>. A 60% forecast should win about 60% of the time over many games. The journal lets you check that prospectively.</p>
-  </details>
-  <section id="paperLog" class="paper-log" aria-label="Paper trades"></section>
   <div id="gamesContainer" class="status">Loading games…</div>
 </main>
 
 <footer>
-  Model combines current-season form with a previous-season baseline pulled toward league average, using point differential, record, and home/away splits. Kalshi comparisons are optional and never enter the probability calculation. Not a guarantee, and it doesn't see injuries or coaching matchups yet. Data comes from ESPN's public but unofficial API and Kalshi's public market data, either of which could change without notice. Use it as one input, not the whole decision.
+  Model combines current-season form with a previous-season baseline pulled toward league average, using point differential, record, and home/away splits. Not a guarantee, and it doesn't see injuries or coaching matchups yet. Data comes from ESPN's public but unofficial API, which could change without notice. Use it as one input, not the whole decision.
 </footer>
 
 <script type="module">
-import { mountComparison, initPaperLog } from "./paper.js";
 import { matchupProbability } from "./model.js";
-import { initForecastLog, mountForecastSave } from "./forecasts.js";
 let currentSeason = 2026;
 let currentSeasonType = 2;
 let currentWeek = 1;
@@ -246,40 +192,6 @@ function readableTextColor(hex) {
   return lum > 0.6 ? '#12253F' : '#F2F4F8';
 }
 
-function probToAmerican(p) {
-  if (p <= 0 || p >= 1) return null;
-  if (p >= 0.5) return Math.round(-100 * p / (1 - p));
-  return Math.round(100 * (1 - p) / p);
-}
-
-function americanToImplied(odds) {
-  const n = parseFloat(odds);
-  if (isNaN(n) || n === 0) return null;
-  return n > 0 ? 100/(n+100) : -n/(-n+100);
-}
-
-async function getKalshiOdds(awayAbbr, homeAbbr, gameDate) {
-  try {
-    return await fetchJSON(`/api/kalshi-odds?away=${awayAbbr}&home=${homeAbbr}&gameDate=${encodeURIComponent(gameDate)}`);
-  } catch (e) {
-    return null;
-  }
-}
-async function getKalshiSpread(awayAbbr, homeAbbr, gameDate) {
-  try {
-    return await fetchJSON(`/api/kalshi-spread?away=${awayAbbr}&home=${homeAbbr}&gameDate=${encodeURIComponent(gameDate)}`);
-  } catch (e) {
-    return null;
-  }
-}
-async function getKalshiTotal(awayAbbr, homeAbbr, gameDate) {
-  try {
-    return await fetchJSON(`/api/kalshi-total?away=${awayAbbr}&home=${homeAbbr}&gameDate=${encodeURIComponent(gameDate)}`);
-  } catch (e) {
-    return null;
-  }
-}
-
 function historyCaption(team, stats, model) {
   if (model.neutralFallback) return `${team}: no usable game history — neutral fallback${model.dataWarning ? '; previous-season source unavailable' : ''}`;
   const history = model.hasHistory ? `${model.priorSeason} record ${stats.previousSeason.wins}-${stats.previousSeason.losses}-${stats.previousSeason.ties} (${model.priorGames} games)` : 'league-average baseline; previous season unavailable or empty';
@@ -308,7 +220,7 @@ async function toggleMatchup(card, ev, home, away) {
 
     if (awayStats.dataVersion !== 2 || homeStats.dataVersion !== 2) throw new Error('Historical data update is not deployed yet. Please refresh after updating the API.');
     const forecast = matchupProbability(homeStats, awayStats, home.team.abbreviation, away.team.abbreviation);
-    const { homeWinProb, awayWinProb, divisional } = forecast;
+    const { homeWinProb, divisional } = forecast;
     const awayRestPenalty = Number.isFinite(awayStats.daysRest) && awayStats.daysRest <= 4 ? .03 : 0;
     const homeRestPenalty = Number.isFinite(homeStats.daysRest) && homeStats.daysRest <= 4 ? .03 : 0;
 
@@ -319,7 +231,7 @@ async function toggleMatchup(card, ev, home, away) {
     const weather = comp.weather;
 
     let signalNotes = [];
-    if (Math.min(forecast.away.evidenceGames, forecast.home.evidenceGames) < 4) signalNotes.push("limited historical and current data — paper research only");
+    if (Math.min(forecast.away.evidenceGames, forecast.home.evidenceGames) < 4) signalNotes.push("limited historical and current data — treat this estimate cautiously");
     if (divisional) signalNotes.push('divisional matchup (pulled slightly toward even)');
     if (awayRestPenalty > 0) signalNotes.push(`${away.team.abbreviation} on short rest (${awayStats.daysRest}d)`);
     if (homeRestPenalty > 0) signalNotes.push(`${home.team.abbreviation} on short rest (${homeStats.daysRest}d)`);
@@ -347,64 +259,11 @@ async function toggleMatchup(card, ev, home, away) {
             ${weather && weather.displayValue ? `<br>${weather.displayValue}${weather.temperature != null ? `, ${weather.temperature}°F` : ''} at kickoff` : ''}
           </div>
         </div>
-        <div class="forecast-save edge-comparison"></div>
-        <details class="market-panel"><summary>Optional: compare with Kalshi</summary><div class="market-content"></div></details>
       </div>
     `;
-    const context = { forecast, homeWinProb, awayWinProb, gameDate, gameId: String(ev.id || ''), gameState: comp.status.type.state,
-      home: home.team.abbreviation, away: away.team.abbreviation, homeStats, awayStats };
-    mountForecastSave(slot.querySelector('.forecast-save'), context);
-    const panel = slot.querySelector('.market-panel');
-    panel.addEventListener('click', event => event.stopPropagation());
-    let marketLoaded = false;
-    panel.addEventListener('toggle', () => {
-      if (!panel.open || marketLoaded) return;
-      marketLoaded = true;
-      loadMarketComparison(panel.querySelector('.market-content'), context, home, away, gameDate);
-    });
   } catch (err) {
     if (slot.dataset.open !== 'true' || slot.dataset.request !== requestId) return;
     slot.innerHTML = `<div class="error-box">Couldn't compute this matchup: ${err.message}</div>`;
-  }
-}
-
-async function loadMarketComparison(element, context, home, away, gameDate) {
-  element.innerHTML = '<div class="status">Loading optional market data…</div>';
-  try {
-    const [kalshiML, kalshiSpread, kalshiTotal] = await Promise.all([
-      getKalshiOdds(away.team.abbreviation, home.team.abbreviation, gameDate),
-      getKalshiSpread(away.team.abbreviation, home.team.abbreviation, gameDate),
-      getKalshiTotal(away.team.abbreviation, home.team.abbreviation, gameDate)
-    ]);
-
-    let oddsHTML = '';
-    if ((kalshiSpread && kalshiSpread.available) || (kalshiTotal && kalshiTotal.available)) {
-      const spreadLine = kalshiSpread && kalshiSpread.available ? kalshiSpread.lines[0] : null;
-      const totalLine = kalshiTotal && kalshiTotal.available ? kalshiTotal.lines[0] : null;
-      oddsHTML = `
-        <div class="odds-section">
-          <h3>Live Kalshi line</h3>
-          <div class="odds-grid">
-            <div class="odds-col">
-              <div class="label">Spread</div>
-              <div class="line">${spreadLine ? `${spreadLine.favoredTeam} -${spreadLine.line}` : '—'}</div>
-            </div>
-            <div class="odds-col">
-              <div class="label">Total</div>
-              <div class="line">O/U ${totalLine ? totalLine.line : '—'}</div>
-            </div>
-          </div>
-        </div>
-      `;
-    }
-
-
-    if (!element.isConnected) return;
-    element.innerHTML = `<div class="edge-comparison"></div>${oddsHTML}`;
-    mountComparison(element.querySelector('.edge-comparison'), { ...context, market: kalshiML,
-      refresh: () => loadMarketComparison(element, context, home, away, gameDate) });
-  } catch {
-    element.textContent = 'Market data could not be loaded. Your probability estimate is still available.';
   }
 }
 
@@ -417,8 +276,6 @@ document.getElementById('nextWeek').addEventListener('click', () => {
   loadGames();
 });
 
-initForecastLog(document.getElementById("forecastLog"));
-initPaperLog(document.getElementById("paperLog"));
 loadGames();
 </script>
 </body>
