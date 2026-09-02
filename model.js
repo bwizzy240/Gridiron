@@ -75,3 +75,71 @@ export function matchupProbability(homeStats, awayStats, homeTeam, awayTeam, con
   if (divisional) homeWinProb = homeWinProb * .85 + .5 * .15;
   return { homeWinProb, awayWinProb: 1 - homeWinProb, home, away, divisional };
 }
+
+// ---- Points projection (for spread/total probabilities) ----
+//
+// Same current+previous-season blending approach as teamStrength above, applied to points-for
+// and points-against per game instead of win percentage, regressed toward a league-average
+// baseline of ~22.5 points/team/game (roughly matches modern-era NFL scoring).
+//
+// Margin-of-victory relative to the closing line has a well-documented standard deviation of
+// 13.86 points (Stern 1991, derived from the 1981/83/84 seasons; holds up on modern data — see
+// Pro-Football-Reference's win-probability writeup). Game totals and margins are both
+// sums/differences of two independent team-score distributions with similar variance, so the
+// same figure is used here as an approximation for totals too. This is a known simplification —
+// real total variance tends to run a bit lower, since weather and pace correlate both teams'
+// scoring in the same direction — not a separately, precisely fitted number.
+const LEAGUE_AVG_PPG = 22.5;
+export const SCORE_STD_DEV = 13.86;
+
+export function projectPoints(homeStats, awayStats, config = DEFAULT_MODEL) {
+  function blend(stats) {
+    const gp = stats.gamesPlayed || 0;
+    const pf = gp > 0 ? stats.pointsFor / gp : null;
+    const pa = gp > 0 ? stats.pointsAgainst / gp : null;
+    const prevGp = stats.previousSeason?.gamesPlayed || 0;
+    const prevPf = prevGp > 0 ? stats.previousSeason.pointsFor / prevGp : null;
+    const prevPa = prevGp > 0 ? stats.previousSeason.pointsAgainst / prevGp : null;
+    const retention = config.priorRetention * Math.min(1, prevGp / 8);
+    const baselinePf = prevPf === null ? LEAGUE_AVG_PPG : LEAGUE_AVG_PPG + (prevPf - LEAGUE_AVG_PPG) * retention;
+    const baselinePa = prevPa === null ? LEAGUE_AVG_PPG : LEAGUE_AVG_PPG + (prevPa - LEAGUE_AVG_PPG) * retention;
+    const currentWeight = gp / (gp + config.fadeGames);
+    return {
+      pf: currentWeight * (pf ?? LEAGUE_AVG_PPG) + (1 - currentWeight) * baselinePf,
+      pa: currentWeight * (pa ?? LEAGUE_AVG_PPG) + (1 - currentWeight) * baselinePa
+    };
+  }
+  const home = blend(homeStats);
+  const away = blend(awayStats);
+  const expectedHomePoints = (home.pf + away.pa) / 2;
+  const expectedAwayPoints = (away.pf + home.pa) / 2;
+  return {
+    expectedHomePoints, expectedAwayPoints,
+    expectedMargin: expectedHomePoints - expectedAwayPoints,
+    expectedTotal: expectedHomePoints + expectedAwayPoints
+  };
+}
+
+// Standard normal CDF via Abramowitz-Stegun approximation.
+export function normalCDF(z) {
+  const t = 1 / (1 + 0.2316419 * Math.abs(z));
+  const d = 0.3989423 * Math.exp(-z * z / 2);
+  let p = d * t * (0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.821256 + t * 1.330274))));
+  if (z > 0) p = 1 - p;
+  return p;
+}
+
+// homeLine is the number the HOME team must cover by (e.g. -3.5 means home must win by 4+).
+export function spreadProbs(projection, homeLine) {
+  if (!projection) return null;
+  const z = (homeLine - projection.expectedMargin) / SCORE_STD_DEV;
+  const homeCoversProb = 1 - normalCDF(z);
+  return { home: homeCoversProb, away: 1 - homeCoversProb };
+}
+
+export function totalProbs(projection, total) {
+  if (!projection) return null;
+  const z = (total - projection.expectedTotal) / SCORE_STD_DEV;
+  const overProb = 1 - normalCDF(z);
+  return { over: overProb, under: 1 - overProb };
+}
