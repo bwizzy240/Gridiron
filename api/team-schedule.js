@@ -1,5 +1,5 @@
 export default async function handler(req, res) {
-  const { teamId, season } = req.query;
+  const { teamId, season, beforeDate } = req.query;
   if (!teamId || !season) return res.status(400).json({ error: 'missing teamId or season' });
 
   try {
@@ -13,6 +13,7 @@ export default async function handler(req, res) {
     let wins = 0, losses = 0, ties = 0;
     let homeWins = 0, homeLosses = 0, awayWins = 0, awayLosses = 0;
     let pointsFor = 0, pointsAgainst = 0, gamesPlayed = 0;
+    let lastGameDate = null;
 
     events.forEach(ev => {
       const comp = ev.competitions && ev.competitions[0];
@@ -40,7 +41,18 @@ export default async function handler(req, res) {
       } else {
         ties++;
       }
+
+      // Track the most recent completed game strictly before the upcoming matchup
+      const gameDate = new Date(comp.date);
+      if (!beforeDate || gameDate < new Date(beforeDate)) {
+        if (!lastGameDate || gameDate > lastGameDate) lastGameDate = gameDate;
+      }
     });
+
+    let daysRest = null;
+    if (lastGameDate && beforeDate) {
+      daysRest = Math.round((new Date(beforeDate) - lastGameDate) / (1000 * 60 * 60 * 24));
+    }
 
     res.setHeader('Cache-Control', 's-maxage=1800, stale-while-revalidate');
     res.status(200).json({
@@ -48,7 +60,8 @@ export default async function handler(req, res) {
       gamesPlayed, wins, losses, ties,
       pointsFor, pointsAgainst,
       homeRecord: { wins: homeWins, losses: homeLosses },
-      awayRecord: { wins: awayWins, losses: awayLosses }
+      awayRecord: { wins: awayWins, losses: awayLosses },
+      daysRest
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
