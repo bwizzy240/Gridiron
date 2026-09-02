@@ -83,6 +83,14 @@
 
   .odds-section { padding: 0 18px 18px; }
   .odds-section h3 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px; margin: 0 0 10px; color: var(--ink-soft); }
+  .compare-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .compare-col { background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 12px; text-align: center; }
+  .compare-col .abbr { font-size: 11px; color: var(--ink-soft); text-transform: uppercase; }
+  .compare-col .row { display: flex; justify-content: space-between; font-size: 12px; margin-top: 6px; }
+  .compare-col .row .val { font-weight: 700; }
+  .compare-col .edge { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--line); font-size: 12px; font-weight: 700; }
+  .compare-col .edge.pos { color: var(--accent); }
+  .compare-col .edge.neg { color: var(--neg); }
   .odds-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
   .odds-col { background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 12px; text-align: center; }
   .odds-col .label { font-size: 11px; color: var(--ink-soft); text-transform: uppercase; }
@@ -95,7 +103,7 @@
 
 <header>
   <h1>Gridiron</h1>
-  <p>Estimates NFL win probability from season point differential and home/away form, blended with real sportsbook lines.</p>
+  <p>Estimates NFL win probability from season point differential and home/away form, blended with live Kalshi market pricing.</p>
 </header>
 
 <div class="weekbar">
@@ -109,7 +117,7 @@
 </main>
 
 <footer>
-  Model blends season point differential (Pythagorean win expectation), overall record, and home/away splits with real sportsbook odds embedded in ESPN's data — not a guarantee, and it doesn't see injuries, weather, or coaching matchups yet. Data comes from ESPN's public but unofficial API, which could change without notice. Use it as one input, not the whole decision.
+  Model blends season point differential (Pythagorean win expectation), overall record, and home/away splits with live Kalshi market pricing — not a guarantee, and it doesn't see injuries or coaching matchups yet. Data comes from ESPN's public but unofficial API and Kalshi's public market data, either of which could change without notice. Use it as one input, not the whole decision.
 </footer>
 
 <script>
@@ -335,6 +343,8 @@ async function toggleMatchup(card, ev, home, away) {
       getKalshiTotal(away.team.abbreviation, home.team.abbreviation)
     ]);
 
+    const preBlendHomeWinProb = homeWinProb; // our model's own number, before Kalshi is folded in
+
     let kalshiHomeProb = null;
     if (kalshiML && kalshiML.available) {
       if (kalshiML.yesTeam === home.team.abbreviation) kalshiHomeProb = kalshiML.yesProb;
@@ -369,6 +379,36 @@ async function toggleMatchup(card, ev, home, away) {
       `;
     }
 
+    let compareHTML = '';
+    if (kalshiHomeProb !== null) {
+      const kalshiAwayProb = 1 - kalshiHomeProb;
+      const awayEdge = (preBlendHomeWinProb !== null ? (1 - preBlendHomeWinProb) - kalshiAwayProb : 0) * 100;
+      const homeEdge = (preBlendHomeWinProb - kalshiHomeProb) * 100;
+
+      function compareCol(abbr, modelProb, kalshiProb, edge) {
+        const edgeClass = edge > 0 ? 'pos' : (edge < 0 ? 'neg' : '');
+        const edgeText = edge > 0 ? `+${edge.toFixed(1)}% model edge` : `${edge.toFixed(1)}% vs Kalshi`;
+        return `
+          <div class="compare-col">
+            <div class="abbr">${abbr}</div>
+            <div class="row"><span>Our model</span><span class="val">${(modelProb * 100).toFixed(1)}%</span></div>
+            <div class="row"><span>Kalshi</span><span class="val">${(kalshiProb * 100).toFixed(1)}%</span></div>
+            <div class="edge ${edgeClass}">${edgeText}</div>
+          </div>
+        `;
+      }
+
+      compareHTML = `
+        <div class="odds-section">
+          <h3>Our model vs. Kalshi</h3>
+          <div class="compare-grid">
+            ${compareCol(away.team.abbreviation, 1 - preBlendHomeWinProb, kalshiAwayProb, awayEdge)}
+            ${compareCol(home.team.abbreviation, preBlendHomeWinProb, kalshiHomeProb, homeEdge)}
+          </div>
+        </div>
+      `;
+    }
+
     const comp = ev.competitions[0];
     const weather = comp.weather;
 
@@ -397,6 +437,7 @@ async function toggleMatchup(card, ev, home, away) {
             ${weather && weather.displayValue ? `<br>${weather.displayValue}${weather.temperature != null ? `, ${weather.temperature}°F` : ''} at kickoff` : ''}
           </div>
         </div>
+        ${compareHTML}
         ${oddsHTML}
       </div>
     `;
