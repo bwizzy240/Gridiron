@@ -751,42 +751,22 @@ function findKalshiEventForGame(events, g) {
     return blob.includes(away.name.toUpperCase()) && blob.includes(home.name.toUpperCase());
   });
 }
-// Confirmed live against Kalshi's public API: prices come back as dollar-string fields (e.g. "0.3100" = 31%),
-// and threshold/ladder markets carry strike_type ('greater'/'less'/'between') plus floor_strike/cap_strike.
-// A market with no strike_type at all is the plain two-way winner market.
+// Confirmed live from a real console capture: NFL moneyline on Kalshi isn't one shared two-sided
+// market — it's TWO separate "will <TEAM> win?" markets per game, each with strike_type "structured"
+// and a ticker ending in that team's abbreviation (e.g. KXNFLGAME-26SEP09NESEA-SEA). Prices are
+// dollar-string fields (e.g. "0.3100" = 31%). Spread/total were NOT present in the same event when
+// checked — they likely live under a different series, so Kalshi is moneyline-only here for now;
+// the Odds API key remains the reliable path for spread/total.
 function kalshiMidProb(m) {
   const bid = parseFloat(m.yes_bid_dollars), ask = parseFloat(m.yes_ask_dollars);
   if (!isNaN(bid) && !isNaN(ask) && (bid > 0 || ask > 0)) return (bid + ask) / 2;
   const last = parseFloat(m.last_price_dollars);
   return isNaN(last) ? null : last;
 }
-function classifyKalshiMarket(m, awayAbbr, homeAbbr) {
-  if (!m.strike_type) return { kind: 'winner' };
-  const blob = `${m.title || ''} ${m.yes_sub_title || ''} ${m.no_sub_title || ''}`.toUpperCase();
-  const threshold = (m.floor_strike !== undefined && m.floor_strike !== null) ? m.floor_strike : m.cap_strike;
-  if (threshold == null) return { kind: 'other' };
-  if (/TOTAL|POINTS|OVER|UNDER/.test(blob)) return { kind: 'total', threshold };
-  if (blob.includes(awayAbbr) || blob.includes(homeAbbr)) return { kind: 'spread', threshold, blob };
-  return { kind: 'other' };
-}
-async function fetchKalshiLadder(g, kind) {
-  try {
-    const events = await getKalshiEvents(false);
-    const ev = findKalshiEventForGame(events, g);
-    if (!ev || !ev.markets || !ev.markets.length) return null;
-    const away = TEAM_BY_ID.get(g.awayId), home = TEAM_BY_ID.get(g.homeId);
-    let best = null, bestDist = Infinity;
-    for (const m of ev.markets) {
-      const info = classifyKalshiMarket(m, away.abbr, home.abbr);
-      if (info.kind !== kind) continue;
-      const p = kalshiMidProb(m);
-      if (p === null) continue;
-      // The line the market is "at" is the threshold whose price sits closest to a coin flip.
-      const dist = Math.abs(p - 0.5);
-      if (dist < bestDist) { bestDist = dist; best = { info, prob: p }; }
-    }
-    return best;
-  } catch (e) { return null; }
+function kalshiTeamWinMarket(m, teamAbbr) {
+  const tickerParts = (m.ticker || '').split('-');
+  const tickerTeam = tickerParts[tickerParts.length - 1];
+  return m.strike_type === 'structured' && tickerTeam === teamAbbr;
 }
 
 /* ============================== Optional: The Odds API (for moneyline fallback + spread/total) ============================== */
@@ -831,17 +811,19 @@ async function fetchMoneylineOdds(g, forceRefresh) {
     if (!ev) {
       console.warn(`[Gridiron] No Kalshi event matched for ${away.abbr} @ ${home.abbr}. ${events.length} KXNFLGAME events were available:`, events.map(e => e.event_ticker || e.title));
     } else if (!ev.markets || !ev.markets.length) {
-      console.warn(`[Gridiron] Kalshi event matched for ${away.abbr} @ ${home.abbr} but it has no nested markets:`, ev);
-    }
-    if (ev && ev.markets && ev.markets.length) {
-      const winnerMkt = ev.markets.find(m => classifyKalshiMarket(m, away.abbr, home.abbr).kind === 'winner');
-      if (!winnerMkt) console.warn(`[Gridiron] Kalshi event found for ${away.abbr} @ ${home.abbr} but no market classified as winner. Full market data:\n` + JSON.stringify(ev.markets, null, 2));
-      const p = winnerMkt ? kalshiMidProb(winnerMkt) : null;
-      if (winnerMkt && p === null) console.warn('[Gridiron] Kalshi winner market found but had no usable price:', winnerMkt);
-      if (winnerMkt && p !== null) {
-        const subtitle = (winnerMkt.yes_sub_title || winnerMkt.title || '').toUpperCase();
-        const yesIsHome = subtitle.includes(home.abbr) || subtitle.includes(home.name.toUpperCase());
-        const homeProb = Math.min(0.97, Math.max(0.03, yesIsHome ? p : 1 - p));
+      console.warn(`[Gridiron] Kalshi event matched for ${away.abbr} @ ${home.abbr} but it has no nested markets.`);
+    } else {
+      const homeMkt = ev.markets.find(m => kalshiTeamWinMarket(m, home.abbr));
+      const awayMkt = ev.markets.find(m => kalshiTeamWinMarket(m, away.abbr));
+      const homeP = homeMkt ? kalshiMidProb(homeMkt) : null;
+      const awayP = awayMkt ? kalshiMidProb(awayMkt) : null;
+      if (homeP === null && awayP === null) {
+        console.warn(`[Gridiron] Kalshi event found for ${away.abbr} @ ${home.abbr} but neither team's win market had a usable price. Markets:\n` + JSON.stringify(ev.markets, null, 2));
+      } else {
+        // If both sides are quoted, average home's own price with (1 - away's price) since they
+        // should roughly agree; otherwise use whichever side actually has a price.
+        let homeProb = homeP !== null && awayP !== null ? (homeP + (1 - awayP)) / 2 : (homeP !== null ? homeP : 1 - awayP);
+        homeProb = Math.min(0.97, Math.max(0.03, homeProb));
         const hA = probToAmerican(homeProb), aA = probToAmerican(1 - homeProb);
         if (hA && aA) return { available: true, source: 'kalshi', homeAmerican: hA, awayAmerican: aA };
       }
@@ -866,7 +848,8 @@ async function fetchMoneylineOdds(g, forceRefresh) {
   return { available: false };
 }
 async function fetchSpreadOdds(g, forceRefresh) {
-  // Odds API first when a key is set (documented, unambiguous field names).
+  // Odds API only — a live console capture confirmed Kalshi's NFL event only carries the two
+  // per-team moneyline markets, not spread/total, so there's nothing to read here without a key.
   try {
     const oddsGames = await getOddsApiGames(forceRefresh);
     if (oddsGames) {
@@ -879,19 +862,6 @@ async function fetchSpreadOdds(g, forceRefresh) {
         const awayO = spreads.outcomes.find(o => o.name.toUpperCase().includes(away.name.toUpperCase()));
         if (homeO && awayO) return { available: true, source: 'oddsapi (' + book.title + ')', line: homeO.point, homeAmerican: homeO.price, awayAmerican: awayO.price };
       }
-    }
-  } catch (e) { /* fall through to Kalshi */ }
-  // Kalshi ladder — no key needed, but reading "which threshold is the line" is a best-effort heuristic.
-  try {
-    const home = TEAM_BY_ID.get(g.homeId);
-    const best = await fetchKalshiLadder(g, 'spread');
-    if (best) {
-      const yesIsHome = (best.info.blob || '').includes(home.abbr);
-      const yesProb = Math.min(0.97, Math.max(0.03, best.prob));
-      const homeProb = yesIsHome ? yesProb : 1 - yesProb;
-      const hA = probToAmerican(homeProb), aA = probToAmerican(1 - homeProb);
-      const line = yesIsHome ? -best.info.threshold : best.info.threshold;
-      if (hA && aA) return { available: true, source: 'kalshi (ladder read)', line, homeAmerican: hA, awayAmerican: aA };
     }
   } catch (e) { /* fall through */ }
   return { available: false };
@@ -908,14 +878,6 @@ async function fetchTotalOdds(g, forceRefresh) {
         const underO = totals.outcomes.find(o => o.name.toUpperCase() === 'UNDER');
         if (overO && underO) return { available: true, source: 'oddsapi (' + book.title + ')', line: overO.point, overAmerican: overO.price, underAmerican: underO.price };
       }
-    }
-  } catch (e) { /* fall through to Kalshi */ }
-  try {
-    const best = await fetchKalshiLadder(g, 'total');
-    if (best) {
-      const overProb = Math.min(0.97, Math.max(0.03, best.prob));
-      const oA = probToAmerican(overProb), uA = probToAmerican(1 - overProb);
-      if (oA && uA) return { available: true, source: 'kalshi (ladder read)', line: best.info.threshold, overAmerican: oA, underAmerican: uA };
     }
   } catch (e) { /* fall through */ }
   return { available: false };
