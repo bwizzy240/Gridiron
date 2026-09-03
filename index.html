@@ -441,7 +441,8 @@ function updateDataStatus() {
   if (liveGames === 0) scheduleLabel = 'sample schedule (ESPN unreachable)';
   else if (liveGames === total) scheduleLabel = 'live ESPN schedule & scores';
   else scheduleLabel = `live ESPN schedule (${liveGames}/${total} games; rest sample)`;
-  const oddsLabel = getOddsApiKey() ? 'Kalshi + The Odds API' : 'Kalshi (add a key for steadier spreads/totals)';
+  const kalshiLabel = kalshiStatus === 'ok' ? 'Kalshi ✓' : (kalshiStatus === 'proxied' ? 'Kalshi via proxy ✓' : (kalshiStatus === 'error' ? 'Kalshi unreachable ✗' : 'Kalshi (open a game to test)'));
+  const oddsLabel = getOddsApiKey() ? `${kalshiLabel} + Odds API` : `${kalshiLabel} — add a key for steadier spreads/totals`;
   el.textContent = `Data: ${scheduleLabel} · weather: Open-Meteo · odds: ${oddsLabel} · QBs: ESPN · injuries: ESPN (loads on expand)`;
 }
 
@@ -705,15 +706,40 @@ function americanToImplied(odds) {
 
 /* ============================== LIVE: Kalshi public market data (moneyline) ============================== */
 let kalshiEventsPromise = null;
+let kalshiStatus = 'unknown'; // 'ok' | 'proxied' | 'error'
 async function getKalshiEvents(forceRefresh) {
   if (forceRefresh) kalshiEventsPromise = null;
-  if (!kalshiEventsPromise) {
-    kalshiEventsPromise = fetch('https://external-api.kalshi.com/trade-api/v2/events?series_ticker=KXNFLGAME&status=open&with_nested_markets=true&limit=200')
-      .then(r => { if (!r.ok) throw new Error('kalshi ' + r.status); return r.json(); })
-      .then(d => d.events || [])
-      .catch(() => []);
-  }
+  if (!kalshiEventsPromise) kalshiEventsPromise = loadKalshiEvents();
   return kalshiEventsPromise;
+}
+async function loadKalshiEvents() {
+  const url = 'https://external-api.kalshi.com/trade-api/v2/events?series_ticker=KXNFLGAME&status=open&with_nested_markets=true&limit=200';
+  try {
+    const r = await fetch(url);
+    if (!r.ok) throw new Error('kalshi ' + r.status);
+    const d = await r.json();
+    kalshiStatus = 'ok';
+    console.info('[Gridiron] Kalshi events loaded directly:', (d.events || []).length, d.events);
+    updateDataStatus();
+    return d.events || [];
+  } catch (directErr) {
+    console.warn('[Gridiron] Direct Kalshi fetch failed (often a CORS block from the browser) — trying a CORS proxy. Error:', directErr);
+    try {
+      const proxyUrl = 'https://api.allorigins.win/raw?url=' + encodeURIComponent(url);
+      const r2 = await fetch(proxyUrl);
+      if (!r2.ok) throw new Error('proxy ' + r2.status);
+      const d2 = await r2.json();
+      kalshiStatus = 'proxied';
+      console.info('[Gridiron] Kalshi events loaded via CORS proxy:', (d2.events || []).length, d2.events);
+      updateDataStatus();
+      return d2.events || [];
+    } catch (proxyErr) {
+      kalshiStatus = 'error';
+      console.error('[Gridiron] Kalshi fetch failed both directly and via proxy:', proxyErr);
+      updateDataStatus();
+      return [];
+    }
+  }
 }
 function findKalshiEventForGame(events, g) {
   const away = TEAM_BY_ID.get(g.awayId), home = TEAM_BY_ID.get(g.homeId);
@@ -800,11 +826,18 @@ function findOddsApiGame(games, g) {
 async function fetchMoneylineOdds(g, forceRefresh) {
   try {
     const events = await getKalshiEvents(forceRefresh);
+    const away = TEAM_BY_ID.get(g.awayId), home = TEAM_BY_ID.get(g.homeId);
     const ev = findKalshiEventForGame(events, g);
+    if (!ev) {
+      console.warn(`[Gridiron] No Kalshi event matched for ${away.abbr} @ ${home.abbr}. ${events.length} KXNFLGAME events were available:`, events.map(e => e.event_ticker || e.title));
+    } else if (!ev.markets || !ev.markets.length) {
+      console.warn(`[Gridiron] Kalshi event matched for ${away.abbr} @ ${home.abbr} but it has no nested markets:`, ev);
+    }
     if (ev && ev.markets && ev.markets.length) {
-      const away = TEAM_BY_ID.get(g.awayId), home = TEAM_BY_ID.get(g.homeId);
       const winnerMkt = ev.markets.find(m => classifyKalshiMarket(m, away.abbr, home.abbr).kind === 'winner');
+      if (!winnerMkt) console.warn(`[Gridiron] Kalshi event found for ${away.abbr} @ ${home.abbr} but no market classified as the winner market:`, ev.markets);
       const p = winnerMkt ? kalshiMidProb(winnerMkt) : null;
+      if (winnerMkt && p === null) console.warn('[Gridiron] Kalshi winner market found but had no usable price:', winnerMkt);
       if (winnerMkt && p !== null) {
         const subtitle = (winnerMkt.yes_sub_title || winnerMkt.title || '').toUpperCase();
         const yesIsHome = subtitle.includes(home.abbr) || subtitle.includes(home.name.toUpperCase());
@@ -813,7 +846,7 @@ async function fetchMoneylineOdds(g, forceRefresh) {
         if (hA && aA) return { available: true, source: 'kalshi', homeAmerican: hA, awayAmerican: aA };
       }
     }
-  } catch (e) { /* fall through to Odds API */ }
+  } catch (e) { console.error('[Gridiron] fetchMoneylineOdds Kalshi path threw:', e); }
 
   try {
     const oddsGames = await getOddsApiGames(forceRefresh);
