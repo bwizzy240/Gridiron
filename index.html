@@ -240,7 +240,7 @@
 </main>
 
 <footer>
-  Model blends scoring differential (Pythagorean win expectation), season record, home/away-specific record, and recent form, then layers on rest since last game, travel distance/time-zone shift, and weather, with a calibration adjustment based on backtested results — it is not a guarantee and doesn't account for everything a sportsbook prices in. Schedule, scores and standings are pulled live from ESPN's public scoreboard where available; weather comes from Open-Meteo; moneyline odds come from Kalshi's public market data, with spread and total odds read from Kalshi's price ladder or, more reliably, a free Odds API key (see button above); starting-QB rating comes from ESPN's box-score leaders for each team's most recent game; the injury report loads live from ESPN when you expand a game's details panel. Any of these can silently fall back to a generated sample if the live source doesn't respond — nothing here is guaranteed. Use this as one input, not the whole decision. Bet only what you can afford to lose.
+  Model blends scoring differential (Pythagorean win expectation), season record, home/away-specific record, and recent form, adds a small home-field edge and a preseason strength prior (from Kalshi's season win-total market, fading out as real games accumulate), then layers on rest since last game, travel distance/time-zone shift, and weather, with a calibration adjustment based on backtested results — it is not a guarantee and doesn't account for everything a sportsbook prices in. Schedule, scores and standings are pulled live from ESPN's public scoreboard where available; weather comes from Open-Meteo; moneyline odds and the preseason prior come from Kalshi's public market data via a same-origin proxy; spread and total odds need a free Odds API key (see button above); starting-QB rating comes from ESPN's box-score leaders for each team's most recent game; the injury report loads live from ESPN when you expand a game's details panel. Any of these can silently fall back to a generated sample or a neutral default if the live source doesn't respond — nothing here is guaranteed. Use this as one input, not the whole decision. Bet only what you can afford to lose.
 </footer>
 
 <script>
@@ -443,7 +443,8 @@ function updateDataStatus() {
   else scheduleLabel = `live ESPN schedule (${liveGames}/${total} games; rest sample)`;
   const kalshiLabel = kalshiStatus === 'ok' ? 'Kalshi ✓' : (kalshiStatus === 'proxied' ? 'Kalshi via proxy ✓' : (kalshiStatus === 'error' ? 'Kalshi unreachable ✗' : 'Kalshi (open a game to test)'));
   const oddsLabel = getOddsApiKey() ? `${kalshiLabel} + Odds API` : `${kalshiLabel} — add a key for steadier spreads/totals`;
-  el.textContent = `Data: ${scheduleLabel} · weather: Open-Meteo · odds: ${oddsLabel} · QBs: ESPN · injuries: ESPN (loads on expand)`;
+  const priorLabel = TEAM_PRIOR_WINPCT.size > 0 ? `preseason prior: ${TEAM_PRIOR_WINPCT.size}/32 teams ✓` : 'preseason prior: unavailable';
+  el.textContent = `Data: ${scheduleLabel} · weather: Open-Meteo · odds: ${oddsLabel} · ${priorLabel} · QBs: ESPN · injuries: ESPN (loads on expand)`;
 }
 
 /* ============================== Standings / form, as of a given week ============================== */
@@ -486,10 +487,11 @@ function pythPct(s) {
   const pf = Math.pow(s.pointsFor, PYTH_EXPONENT), pa = Math.pow(s.pointsAgainst, PYTH_EXPONENT);
   return pf / (pf + pa);
 }
-function blendPct(overall, pyth, split, l5) {
+function blendPct(overall, pyth, split, l5, prior, priorW) {
   let weightSum = 0, valueSum = 0;
-  const add = (val, w) => { if (val !== null && val !== undefined && !isNaN(val)) { valueSum += val * w; weightSum += w; } };
+  const add = (val, w) => { if (val !== null && val !== undefined && !isNaN(val) && w > 0) { valueSum += val * w; weightSum += w; } };
   add(overall, 0.20); add(pyth, 0.45); add(split, 0.20); add(l5, 0.15);
+  add(prior, priorW);
   return weightSum > 0 ? valueSum / weightSum : 0.5;
 }
 function log5(pctA, pctB) {
@@ -498,10 +500,19 @@ function log5(pctA, pctB) {
 }
 const MONEYLINE_SHRINKAGE = 0.85;
 function applyShrinkage(prob, factor) { return 0.5 + (prob - 0.5) * factor; }
-function computeBaseWinProb(awayStats, homeStats) {
-  const awayPct = blendPct(pctFromRecord(awayStats), pythPct(awayStats), splitPct(awayStats, 'away'), last5Pct(awayStats));
-  const homePct = blendPct(pctFromRecord(homeStats), pythPct(homeStats), splitPct(homeStats, 'home'), last5Pct(homeStats));
-  const homeWinProb = applyShrinkage(log5(homePct, awayPct), MONEYLINE_SHRINKAGE);
+// A generic home-field edge, applied on top of everything else. Historically NFL home teams win
+// somewhere in the 54-57% range across a neutral matchup; the home/away split component above only
+// captures part of that (and needs games played to exist at all), so this small constant fills the
+// rest and is the only thing keeping early-season matchups from defaulting to a flat 50/50.
+const HOME_FIELD_EDGE = 0.02;
+function computeBaseWinProb(awayStats, homeStats, awayTeamId, homeTeamId) {
+  const awayGP = gamesPlayed(awayStats), homeGP = gamesPlayed(homeStats);
+  const awayPrior = awayTeamId != null ? TEAM_PRIOR_WINPCT.get(awayTeamId) : undefined;
+  const homePrior = homeTeamId != null ? TEAM_PRIOR_WINPCT.get(homeTeamId) : undefined;
+  const awayPct = blendPct(pctFromRecord(awayStats), pythPct(awayStats), splitPct(awayStats, 'away'), last5Pct(awayStats), awayPrior, priorWeight(awayGP));
+  const homePct = blendPct(pctFromRecord(homeStats), pythPct(homeStats), splitPct(homeStats, 'home'), last5Pct(homeStats), homePrior, priorWeight(homeGP));
+  let homeWinProb = applyShrinkage(log5(homePct, awayPct), MONEYLINE_SHRINKAGE);
+  homeWinProb = Math.min(0.97, Math.max(0.03, homeWinProb + HOME_FIELD_EDGE));
   return { homeWinProb, awayWinProb: 1 - homeWinProb };
 }
 
@@ -704,69 +715,69 @@ function americanToImplied(odds) {
   return n > 0 ? 100 / (n + 100) : -n / (-n + 100);
 }
 
-/* ============================== LIVE: Kalshi public market data (moneyline) ============================== */
-let kalshiEventsPromise = null;
-let kalshiStatus = 'unknown'; // 'ok' | 'proxied' | 'error'
-async function getKalshiEvents(forceRefresh) {
-  if (forceRefresh) kalshiEventsPromise = null;
-  if (!kalshiEventsPromise) kalshiEventsPromise = loadKalshiEvents();
-  return kalshiEventsPromise;
-}
+/* ============================== LIVE: Kalshi public market data ============================== */
+let kalshiStatus = 'unknown'; // 'ok' | 'proxied' | 'error' — tracks the KXNFLGAME (moneyline) fetch for the header
 const KALSHI_PROXIES = [
   url => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(url),
   url => 'https://corsproxy.io/?url=' + encodeURIComponent(url),
   url => 'https://api.codetabs.com/v1/proxy?quest=' + encodeURIComponent(url),
   url => 'https://thingproxy.freeboard.io/fetch/' + url
 ];
-async function loadKalshiEvents() {
-  const path = 'events?series_ticker=KXNFLGAME&status=open&with_nested_markets=true&limit=200';
-  const url = 'https://external-api.kalshi.com/trade-api/v2/' + path;
-
-  // Same-origin serverless proxy first — this is the reliable path (see /api/kalshi.js).
-  // Silently skipped if that route hasn't been deployed (404/HTML response).
+// Shared fetch chain for any Kalshi series: same-origin serverless proxy first (see /api/kalshi.js),
+// then a direct browser fetch, then a run through several public CORS proxies. Used for both the
+// per-game moneyline series (KXNFLGAME) and the preseason win-total series (KXNFLWINS).
+async function kalshiFetchEvents(seriesTicker, { trackStatus = false } = {}) {
+  const qs = `series_ticker=${seriesTicker}&status=open&with_nested_markets=true&limit=200`;
   try {
-    const r0 = await fetch('/api/kalshi?path=events&series_ticker=KXNFLGAME&status=open&with_nested_markets=true&limit=200');
+    const r0 = await fetch(`/api/kalshi?path=events&${qs}`);
     if (r0.ok) {
       const d0 = await r0.json();
-      kalshiStatus = 'ok';
-      console.info('[Gridiron] Kalshi events loaded via /api/kalshi serverless proxy:', (d0.events || []).length, d0.events);
-      updateDataStatus();
+      if (trackStatus) { kalshiStatus = 'ok'; updateDataStatus(); }
+      console.info(`[Gridiron] Kalshi ${seriesTicker} events loaded via /api/kalshi serverless proxy:`, (d0.events || []).length);
       return d0.events || [];
     }
-    console.warn('[Gridiron] /api/kalshi route responded but not OK (' + r0.status + ') — is api/kalshi.js deployed? Falling back to direct/proxy attempts.');
+    console.warn(`[Gridiron] /api/kalshi responded but not OK (${r0.status}) for ${seriesTicker} — falling back.`);
   } catch (serverlessErr) {
-    console.warn('[Gridiron] /api/kalshi route not reachable (likely not deployed yet) — falling back to direct/proxy attempts.', serverlessErr);
+    console.warn(`[Gridiron] /api/kalshi not reachable for ${seriesTicker} — falling back.`, serverlessErr);
   }
 
+  const url = `https://external-api.kalshi.com/trade-api/v2/events?${qs}`;
   try {
     const r = await fetch(url);
     if (!r.ok) throw new Error('kalshi ' + r.status);
     const d = await r.json();
-    kalshiStatus = 'ok';
-    console.info('[Gridiron] Kalshi events loaded directly:', (d.events || []).length, d.events);
-    updateDataStatus();
+    if (trackStatus) { kalshiStatus = 'ok'; updateDataStatus(); }
+    console.info(`[Gridiron] Kalshi ${seriesTicker} events loaded directly:`, (d.events || []).length);
     return d.events || [];
   } catch (directErr) {
-    console.warn('[Gridiron] Direct Kalshi fetch failed (often a CORS block from the browser) — trying CORS proxies one by one. Error:', directErr);
+    console.warn(`[Gridiron] Direct Kalshi fetch failed for ${seriesTicker} — trying CORS proxies one by one.`, directErr);
     for (let i = 0; i < KALSHI_PROXIES.length; i++) {
       try {
-        const proxyUrl = KALSHI_PROXIES[i](url);
-        const r2 = await fetch(proxyUrl);
+        const r2 = await fetch(KALSHI_PROXIES[i](url));
         if (!r2.ok) throw new Error('proxy ' + r2.status);
         const d2 = await r2.json();
-        kalshiStatus = 'proxied';
-        console.info(`[Gridiron] Kalshi events loaded via proxy #${i + 1}:`, (d2.events || []).length, d2.events);
-        updateDataStatus();
+        if (trackStatus) { kalshiStatus = 'proxied'; updateDataStatus(); }
+        console.info(`[Gridiron] Kalshi ${seriesTicker} events loaded via proxy #${i + 1}:`, (d2.events || []).length);
         return d2.events || [];
       } catch (proxyErr) {
-        console.warn(`[Gridiron] Proxy #${i + 1} failed, trying the next one. Error:`, proxyErr);
+        console.warn(`[Gridiron] Proxy #${i + 1} failed for ${seriesTicker}.`, proxyErr);
       }
     }
-    kalshiStatus = 'error';
-    console.error('[Gridiron] Kalshi fetch failed via the serverless route, directly, and via every public proxy. Add /api/kalshi.js to your Vercel project — see the comment at the top of that file.');
-    updateDataStatus();
+    if (trackStatus) { kalshiStatus = 'error'; updateDataStatus(); }
+    console.error(`[Gridiron] Kalshi fetch failed via every path for ${seriesTicker}. Add /api/kalshi.js to your Vercel project if you haven't.`);
     return [];
   }
+}
+let kalshiEventsPromise = null;
+async function getKalshiEvents(forceRefresh) {
+  if (forceRefresh) kalshiEventsPromise = null;
+  if (!kalshiEventsPromise) kalshiEventsPromise = kalshiFetchEvents('KXNFLGAME', { trackStatus: true });
+  return kalshiEventsPromise;
+}
+let kalshiWinTotalsPromise = null;
+async function getKalshiWinTotalEvents() {
+  if (!kalshiWinTotalsPromise) kalshiWinTotalsPromise = kalshiFetchEvents('KXNFLWINS', { trackStatus: false });
+  return kalshiWinTotalsPromise;
 }
 function findKalshiEventForGame(events, g) {
   const away = TEAM_BY_ID.get(g.awayId), home = TEAM_BY_ID.get(g.homeId);
@@ -795,6 +806,50 @@ function kalshiTeamWinMarket(m, teamAbbr) {
   const tickerTeam = tickerParts[tickerParts.length - 1];
   return m.strike_type === 'structured' && tickerTeam === teamAbbr;
 }
+
+/* ============================== LIVE: preseason strength prior (Kalshi KXNFLWINS) ==============================
+   Every team has its own season win-total ladder on Kalshi: a series of "N or more wins" markets.
+   Summing the yes-price across every rung of that ladder is the expected value of a non-negative
+   integer distribution (E[X] = sum of P(X >= n) for n = 1..max) — so it gives a real, market-derived
+   expected win total for a team before a single game of the season has been played. That fills the
+   gap our own in-season stats can't: at 0 games played, record/Pythagorean/splits/last-5 all return
+   null, so without this the model has literally nothing to say and lands on 50/50 by default.
+   This prior carries full weight at 0 games played and fades out by around Week 10, handing control
+   back to the team's actual in-season performance. */
+const TEAM_PRIOR_WINPCT = new Map();
+function expectedWinsFromLadder(markets) {
+  let sum = 0, count = 0;
+  for (const m of markets) {
+    const threshold = (m.floor_strike !== undefined && m.floor_strike !== null) ? m.floor_strike : m.cap_strike;
+    if (threshold == null) continue;
+    const p = kalshiMidProb(m);
+    if (p == null) continue;
+    sum += p; count++;
+  }
+  return count > 0 ? Math.min(17, Math.max(0, sum)) : null;
+}
+async function loadTeamPriors() {
+  try {
+    const events = await getKalshiWinTotalEvents();
+    if (!events.length) {
+      console.warn('[Gridiron] No KXNFLWINS events found — preseason priors unavailable; the model will lean on home-field only until games are played.');
+      return;
+    }
+    let loaded = 0;
+    TEAMS.forEach(team => {
+      const ev = events.find(e => `${e.title || ''} ${e.sub_title || ''} ${e.event_ticker || ''}`.toUpperCase().includes(team.abbr));
+      if (!ev || !ev.markets || !ev.markets.length) return;
+      const expWins = expectedWinsFromLadder(ev.markets);
+      if (expWins != null) { TEAM_PRIOR_WINPCT.set(team.id, expWins / 17); loaded++; }
+    });
+    console.info(`[Gridiron] Loaded preseason win-total priors for ${loaded}/32 teams from Kalshi KXNFLWINS.`);
+  } catch (e) {
+    console.warn('[Gridiron] Failed to load KXNFLWINS priors — the model will lean on home-field only until games are played.', e);
+  }
+}
+// How much weight the preseason prior carries as a function of games played this season —
+// full weight at 0 games, linearly fading to 0 by 10 games played (~ midseason).
+function priorWeight(gp) { return Math.max(0, 1 - gp / 10) * 0.9; }
 
 /* ============================== Optional: The Odds API (for moneyline fallback + spread/total) ============================== */
 function getOddsApiKey() { return localStorage.getItem('gridironOddsApiKeyV1') || ''; }
@@ -1054,7 +1109,7 @@ async function renderMatchup(gamePk) {
   const standings = computeStandingsThroughWeek(g.week);
   const awayStats = standings.get(g.awayId), homeStats = standings.get(g.homeId);
 
-  const { homeWinProb: baseHomeWinProb } = computeBaseWinProb(awayStats, homeStats);
+  const { homeWinProb: baseHomeWinProb } = computeBaseWinProb(awayStats, homeStats, g.awayId, g.homeId);
   let homeWinProb = baseHomeWinProb;
 
   const awayQBStatus = getQBStatus(g.awayId, g.week);
@@ -1129,7 +1184,7 @@ async function renderMatchup(gamePk) {
           <div style="text-align:right;"><span class="pct home">${homePctDisplay}%</span><span class="abbr">${home.abbr}</span></div>
         </div>
         <div class="probbar"><div class="away" style="width:${awayPctDisplay}%"></div><div class="home" style="width:${homePctDisplay}%"></div></div>
-        <div class="probbar-caption">Chance to win — based on scoring differential, recent form, QB status (sample), rest &amp; travel${priorMeeting ? `<br>Earlier meeting: ${priorMeeting.awayScore}-${priorMeeting.homeScore} (${TEAM_BY_ID.get(priorMeeting.awayId).abbr} @ ${TEAM_BY_ID.get(priorMeeting.homeId).abbr}, Week ${priorMeeting.week})` : ''}</div>
+        <div class="probbar-caption">Chance to win — based on scoring differential, recent form, home field, QB status (sample), rest &amp; travel${(TEAM_PRIOR_WINPCT.has(g.awayId) || TEAM_PRIOR_WINPCT.has(g.homeId)) ? ', and a preseason strength prior that fades out as the season goes on' : ''}${priorMeeting ? `<br>Earlier meeting: ${priorMeeting.awayScore}-${priorMeeting.homeScore} (${TEAM_BY_ID.get(priorMeeting.awayId).abbr} @ ${TEAM_BY_ID.get(priorMeeting.homeId).abbr}, Week ${priorMeeting.week})` : ''}</div>
       </div>
 
       <div class="bet-tabs">
@@ -1536,7 +1591,7 @@ function loadParlayFinder() {
     const matchupLabel = `${away.abbr} @ ${home.abbr}`;
     const legBase = { gamePk: g.gamePk, matchup: matchupLabel, gameDate: g.gameDate };
 
-    const { homeWinProb, awayWinProb } = computeBaseWinProb(awayStats, homeStats);
+    const { homeWinProb, awayWinProb } = computeBaseWinProb(awayStats, homeStats, g.awayId, g.homeId);
     if (homeWinProb >= awayWinProb) legs.push({ ...legBase, betType: 'moneyline', side: 'home', label: `${home.abbr} ML`, prob: homeWinProb });
     else legs.push({ ...legBase, betType: 'moneyline', side: 'away', label: `${away.abbr} ML`, prob: awayWinProb });
 
@@ -1607,9 +1662,12 @@ function renderBacktestView() {
   const maxPastWeek = Math.max(1, currentWeek - 1);
   view.innerHTML = `
     <div class="status" style="padding:14px 18px; text-align:left;">
-      Tests the moneyline blend — record, Pythagorean win expectation, home/away splits, and recent form —
-      against completed games from the live ESPN schedule (weeks that haven't finished yet, or that fell back
-      to sample data, aren't included in the "live" count below but still run through the same math).
+      Tests the moneyline blend — record, Pythagorean win expectation, home/away splits, recent form,
+      home-field edge, and preseason win-total prior — against completed games from the live ESPN
+      schedule (weeks that haven't finished yet, or that fell back to sample data, aren't included in
+      the "live" count below but still run through the same math). One simplification: early weeks in
+      this backtest use today's Kalshi win-total prior rather than a snapshot from when that week was
+      actually played, since historical prior data isn't available here.
     </div>
     <div style="padding: 0 18px 14px; display:flex; gap:10px; align-items:flex-end;">
       <div style="flex:1;">
@@ -1644,7 +1702,7 @@ function runBacktest() {
     const standings = computeStandingsThroughWeek(w);
     (GAMES_BY_WEEK.get(w) || []).filter(g => g.state === 'Final').forEach(g => {
       const awayStats = standings.get(g.awayId), homeStats = standings.get(g.homeId);
-      const { homeWinProb } = computeBaseWinProb(awayStats, homeStats);
+      const { homeWinProb } = computeBaseWinProb(awayStats, homeStats, g.awayId, g.homeId);
       predictions.push({ predictedHomeProb: homeWinProb, homeWon: g.homeScore > g.awayScore });
       total++; if (g.source === 'espn') liveCount++;
     });
@@ -1714,7 +1772,7 @@ async function init() {
   const container = document.getElementById('gamesContainer');
   container.className = 'status';
   container.textContent = 'Loading live NFL schedule from ESPN…';
-  await loadSeason();
+  await Promise.all([loadSeason(), loadTeamPriors()]);
   currentWeek = determineCurrentWeek();
   updateDataStatus();
   loadGames();
