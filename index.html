@@ -835,7 +835,7 @@ async function fetchMoneylineOdds(g, forceRefresh) {
     }
     if (ev && ev.markets && ev.markets.length) {
       const winnerMkt = ev.markets.find(m => classifyKalshiMarket(m, away.abbr, home.abbr).kind === 'winner');
-      if (!winnerMkt) console.warn(`[Gridiron] Kalshi event found for ${away.abbr} @ ${home.abbr} but no market classified as the winner market:`, ev.markets);
+      if (!winnerMkt) console.warn(`[Gridiron] Kalshi event found for ${away.abbr} @ ${home.abbr} but no market classified as winner. Full market data:\n` + JSON.stringify(ev.markets, null, 2));
       const p = winnerMkt ? kalshiMidProb(winnerMkt) : null;
       if (winnerMkt && p === null) console.warn('[Gridiron] Kalshi winner market found but had no usable price:', winnerMkt);
       if (winnerMkt && p !== null) {
