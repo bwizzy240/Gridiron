@@ -719,7 +719,25 @@ const KALSHI_PROXIES = [
   url => 'https://thingproxy.freeboard.io/fetch/' + url
 ];
 async function loadKalshiEvents() {
-  const url = 'https://external-api.kalshi.com/trade-api/v2/events?series_ticker=KXNFLGAME&status=open&with_nested_markets=true&limit=200';
+  const path = 'events?series_ticker=KXNFLGAME&status=open&with_nested_markets=true&limit=200';
+  const url = 'https://external-api.kalshi.com/trade-api/v2/' + path;
+
+  // Same-origin serverless proxy first — this is the reliable path (see /api/kalshi.js).
+  // Silently skipped if that route hasn't been deployed (404/HTML response).
+  try {
+    const r0 = await fetch('/api/kalshi?path=events&series_ticker=KXNFLGAME&status=open&with_nested_markets=true&limit=200');
+    if (r0.ok) {
+      const d0 = await r0.json();
+      kalshiStatus = 'ok';
+      console.info('[Gridiron] Kalshi events loaded via /api/kalshi serverless proxy:', (d0.events || []).length, d0.events);
+      updateDataStatus();
+      return d0.events || [];
+    }
+    console.warn('[Gridiron] /api/kalshi route responded but not OK (' + r0.status + ') — is api/kalshi.js deployed? Falling back to direct/proxy attempts.');
+  } catch (serverlessErr) {
+    console.warn('[Gridiron] /api/kalshi route not reachable (likely not deployed yet) — falling back to direct/proxy attempts.', serverlessErr);
+  }
+
   try {
     const r = await fetch(url);
     if (!r.ok) throw new Error('kalshi ' + r.status);
@@ -745,7 +763,7 @@ async function loadKalshiEvents() {
       }
     }
     kalshiStatus = 'error';
-    console.error('[Gridiron] Kalshi fetch failed directly and via every proxy.');
+    console.error('[Gridiron] Kalshi fetch failed via the serverless route, directly, and via every public proxy. Add /api/kalshi.js to your Vercel project — see the comment at the top of that file.');
     updateDataStatus();
     return [];
   }
