@@ -240,7 +240,7 @@
 </main>
 
 <footer>
-  Model blends scoring differential (Pythagorean win expectation), season record, home/away-specific record, and recent form, adds a small home-field edge and a preseason strength prior (from Kalshi's season win-total market, fading out as real games accumulate), then applies a calibration curve fit from a 1,360-game, 5-season backtest (the model's confidence above roughly two-thirds empirically carried little extra signal, so that range is compressed rather than left to run toward the extremes), before layering on rest since last game, travel distance/time-zone shift, weather, and starting-QB status — it is not a guarantee and doesn't account for everything a sportsbook prices in. Schedule, scores and standings are pulled live from ESPN's public scoreboard where available; weather comes from Open-Meteo; moneyline odds and the preseason prior come from Kalshi's public market data via a same-origin proxy; spread and total odds need a free Odds API key (see button above); the starting QB comes from ESPN's actual depth chart (ranked, not just whoever played most recently) along with that player's own current status; the injury report loads live from ESPN when you expand a game's details panel. Any of these can silently fall back to a generated sample or a neutral default if the live source doesn't respond — nothing here is guaranteed. Use this as one input, not the whole decision. Bet only what you can afford to lose.
+  Model blends scoring differential (Pythagorean win expectation), an opponent-adjusted power rating (SRS, computed iteratively from the schedule so beating a good team counts for more than beating a bad one), season record, home/away-specific record, and recent form, adds a small home-field edge and a preseason strength prior (from Kalshi's season win-total market, fading out as real games accumulate), then applies a calibration curve fit from a 1,360-game, 5-season backtest, before layering on rest since last game, travel distance/time-zone shift, weather, and starting-QB status — it is not a guarantee and doesn't account for everything a sportsbook prices in. The spread market accounts for NFL "key numbers" (final margins cluster heavily at 3 and 7 because of how scoring works) instead of assuming a smooth bell curve, using published historical frequencies rather than a plain normal distribution; totals don't get this treatment, since reliable key-number data for combined scores isn't as well documented. Schedule, scores and standings are pulled live from ESPN's public scoreboard where available; weather comes from Open-Meteo; moneyline odds and the preseason prior come from Kalshi's public market data via a same-origin proxy; spread and total odds need a free Odds API key (see button above); the starting QB comes from ESPN's actual depth chart (ranked, not just whoever played most recently) along with that player's own current status; the injury report loads live from ESPN when you expand a game's details panel. Any of these can silently fall back to a generated sample or a neutral default if the live source doesn't respond — nothing here is guaranteed. Use this as one input, not the whole decision. Bet only what you can afford to lose.
 </footer>
 
 <script>
@@ -482,7 +482,40 @@ function computeStandingsThroughWeek(week, gamesSource = ALL_GAMES) {
     }
   });
   map.forEach(s => { s.last5 = s.last5.slice(-5); });
+  const srsRatings = computeSRSRatings(priorGames);
+  map.forEach((s, teamId) => { s.srs = srsRatings.get(teamId); });
   return map;
+}
+// Simple Rating System (SRS) — an opponent-adjusted power rating computed purely from the schedule
+// and scores we already have, no play-by-play data required. Unlike raw point differential (what the
+// Pythagorean component below uses), SRS accounts for strength of schedule: beating a good team by 3
+// counts for more than beating a bad team by 3. It's the same family of technique used in publicly
+// documented power ratings (Pro Football Reference's SRS, Sagarin, etc.) — solved iteratively:
+// rating_i = average(game margin vs j + rating_j) over all of i's games, repeated until it converges.
+// Per-game margins are capped before averaging so a single blowout can't distort a team's rating.
+function computeSRSRatings(priorGames) {
+  const MOV_CAP = 24;
+  const teamGames = new Map(TEAMS.map(t => [t.id, []]));
+  priorGames.forEach(g => {
+    let margin = g.homeScore - g.awayScore;
+    margin = Math.max(-MOV_CAP, Math.min(MOV_CAP, margin));
+    teamGames.get(g.homeId).push({ opp: g.awayId, margin });
+    teamGames.get(g.awayId).push({ opp: g.homeId, margin: -margin });
+  });
+  let ratings = new Map(TEAMS.map(t => [t.id, 0]));
+  for (let iter = 0; iter < 15; iter++) {
+    const next = new Map();
+    TEAMS.forEach(t => {
+      const gl = teamGames.get(t.id);
+      if (!gl.length) { next.set(t.id, 0); return; }
+      const sum = gl.reduce((s, x) => s + x.margin + ratings.get(x.opp), 0);
+      next.set(t.id, sum / gl.length);
+    });
+    const avg = Array.from(next.values()).reduce((a, b) => a + b, 0) / next.size;
+    next.forEach((v, k) => next.set(k, v - avg)); // re-center so league average is 0 each pass
+    ratings = next;
+  }
+  return ratings;
 }
 function gamesPlayed(s) { return s ? s.wins + s.losses + s.ties : 0; }
 function pctFromRecord(s) { const gp = gamesPlayed(s); return gp > 0 ? (s.wins + 0.5 * s.ties) / gp : null; }
@@ -498,10 +531,21 @@ function pythPct(s) {
   const pf = Math.pow(s.pointsFor, PYTH_EXPONENT), pa = Math.pow(s.pointsAgainst, PYTH_EXPONENT);
   return pf / (pf + pa);
 }
-function blendPct(overall, pyth, split, l5, prior, priorW) {
+// Converts a team's opponent-adjusted SRS rating (expected margin vs a league-average opponent on a
+// neutral field) into a win-percentage-equivalent, using the same margin-distribution math as the
+// spread market below — so an SRS of +6 (expected to beat an average team by 6) maps to whatever win
+// probability a +6 projected margin implies.
+function srsPct(s) {
+  if (!s || gamesPlayed(s) === 0 || s.srs === undefined || s.srs === null) return null;
+  return normalCDF(s.srs / MARGIN_STD_DEV);
+}
+function blendPct(overall, pyth, srs, split, l5, prior, priorW) {
   let weightSum = 0, valueSum = 0;
   const add = (val, w) => { if (val !== null && val !== undefined && !isNaN(val) && w > 0) { valueSum += val * w; weightSum += w; } };
-  add(overall, 0.20); add(pyth, 0.45); add(split, 0.20); add(l5, 0.15);
+  // Pythagorean's weight was cut from 0.45 to make room for SRS (opponent-adjusted), rather than
+  // dropped entirely — keeping both gives a bit of diversity/stability instead of fully trusting one
+  // point-differential-based signal over the other.
+  add(overall, 0.15); add(pyth, 0.15); add(srs, 0.30); add(split, 0.20); add(l5, 0.10);
   add(prior, priorW);
   return weightSum > 0 ? valueSum / weightSum : 0.5;
 }
@@ -517,13 +561,14 @@ function applyShrinkage(prob, factor) { return 0.5 + (prob - 0.5) * factor; }
 // rest and is the only thing keeping early-season matchups from defaulting to a flat 50/50.
 const HOME_FIELD_EDGE = 0.02;
 // Empirical calibration curve, fit via isotonic regression (pool-adjacent-violators) on a 5-season
-// (2021-2025), 1,360-game backtest of this exact pipeline (shrinkage + home-field edge included).
-// That backtest showed the miscalibration wasn't uniform: 50-70% confidence was already accurate,
-// but every bucket above ~65% flattened out to a real-world win rate of roughly 64-66% regardless
-// of how much higher the raw model pushed — i.e. once this model gets "confident," extra confidence
-// beyond that point carried almost no real signal. A single flat shrinkage constant can't fix a
-// pattern shaped like that (it scales every prediction the same way), so this replaces the tail
-// behavior with a curve fit directly to the observed data instead of another guessed constant.
+// (2021-2025), 1,360-game backtest of an earlier version of this pipeline (before SRS was added to
+// the blend below — see the note on computeBaseWinProb). That backtest showed the miscalibration
+// wasn't uniform: 50-70% confidence was already accurate, but every bucket above ~65% flattened out
+// to a real-world win rate of roughly 64-66% regardless of how much higher the raw model pushed —
+// i.e. once this model got "confident," extra confidence beyond that point carried almost no real
+// signal. A single flat shrinkage constant can't fix a pattern shaped like that (it scales every
+// prediction the same way), so this replaces the tail behavior with a curve fit directly to the
+// observed data instead of another guessed constant.
 // This is a genuine step function, not smoothed/interpolated: isotonic regression pools adjacent
 // buckets into flat-rate bands, and a held-out check (fit including 2025, validated by re-running
 // against 2021-2024 alone) showed that an earlier version of this curve — which linearly interpolated
@@ -534,6 +579,9 @@ const HOME_FIELD_EDGE = 0.02;
 // away-favored side. Caveat worth remembering: this is an in-sample fit on the seasons used to derive
 // it, so re-running that exact backtest will look better almost by construction — the real test is
 // how it holds up on new games as the 2026 season actually plays out, or a fresh held-out split.
+// IMPORTANT: adding SRS to the blend changed the raw model's output distribution, so this curve — fit
+// on the pre-SRS pipeline — is only an approximation now, not a fresh fit. Re-run the backtest (any
+// season range) to see whether it still holds; if the calibration table drifts, it should be refit.
 const CALIBRATION_STEPS = [
   [0.10, 0.0432],  // raw 50-60% -> corrected to a real ~54.3-55% area
   [0.15, 0.118],   // raw 60-65% -> corrected to a real ~61.8% area
@@ -549,12 +597,14 @@ function applyCalibrationCurve(prob) {
   }
   return 0.5 + sign * corrected;
 }
+// SRS (opponent-adjusted) now sits alongside raw Pythagorean in the blend — see blendPct above and
+// computeSRSRatings near computeStandingsThroughWeek for how it's computed.
 function computeBaseWinProb(awayStats, homeStats, awayTeamId, homeTeamId) {
   const awayGP = gamesPlayed(awayStats), homeGP = gamesPlayed(homeStats);
   const awayPrior = awayTeamId != null ? TEAM_PRIOR_WINPCT.get(awayTeamId) : undefined;
   const homePrior = homeTeamId != null ? TEAM_PRIOR_WINPCT.get(homeTeamId) : undefined;
-  const awayPct = blendPct(pctFromRecord(awayStats), pythPct(awayStats), splitPct(awayStats, 'away'), last5Pct(awayStats), awayPrior, priorWeight(awayGP));
-  const homePct = blendPct(pctFromRecord(homeStats), pythPct(homeStats), splitPct(homeStats, 'home'), last5Pct(homeStats), homePrior, priorWeight(homeGP));
+  const awayPct = blendPct(pctFromRecord(awayStats), pythPct(awayStats), srsPct(awayStats), splitPct(awayStats, 'away'), last5Pct(awayStats), awayPrior, priorWeight(awayGP));
+  const homePct = blendPct(pctFromRecord(homeStats), pythPct(homeStats), srsPct(homeStats), splitPct(homeStats, 'home'), last5Pct(homeStats), homePrior, priorWeight(homeGP));
   let homeWinProb = applyShrinkage(log5(homePct, awayPct), MONEYLINE_SHRINKAGE);
   homeWinProb = Math.min(0.97, Math.max(0.03, homeWinProb + HOME_FIELD_EDGE));
   homeWinProb = applyCalibrationCurve(homeWinProb);
@@ -795,10 +845,57 @@ function normalCDF(z) {
 }
 const MARGIN_STD_DEV = 13.5;
 const TOTAL_STD_DEV = 10.5;
+function normalPDF(z) { return Math.exp(-0.5 * z * z) / Math.sqrt(2 * Math.PI); }
+// NFL scoring margins aren't smoothly distributed the way a plain normal curve assumes — because
+// scores come in chunks of 3 (field goal) and 6/7/8 (touchdown + PAT/2pt), certain final margins
+// happen far more often than their neighbors. This is well-documented, publicly published data
+// (multiple independent NFL betting studies converge closely on these figures): roughly 15% of ALL
+// NFL games finish with an exact 3-point margin, ~8% with exactly 7, ~6.5% with 6, ~5.5% with 10,
+// ~5% with 4, and ~4.5% with 14 — these are the sport's classic "key numbers," and it's specifically
+// why sportsbooks treat crossing -2.5 to -3.5 as a much bigger jump than crossing, say, -5.5 to -6.5.
+// These figures are league-wide averages, not adjusted for any one matchup, so buildMarginDistribution
+// scales each one by how likely THIS game's own projection makes that margin — a near-even game gets
+// a much bigger bump at 3 than a projected 20-point blowout does.
+const KEY_NUMBER_FREQ = { 3: 0.148, 4: 0.05, 6: 0.065, 7: 0.08, 10: 0.055, 14: 0.045 };
+function buildMarginDistribution(mean, std) {
+  const MIN_M = -45, MAX_M = 45;
+  const base = new Map();
+  for (let k = MIN_M; k <= MAX_M; k++) base.set(k, normalPDF((k - mean) / std) / std);
+  const isKey = new Set();
+  Object.keys(KEY_NUMBER_FREQ).forEach(k => { isKey.add(Number(k)); isKey.add(-Number(k)); });
+  const neutralDensityAt = k => normalPDF(k / std) / std; // "average" (mean=0) game's density at k
+  const targets = new Map();
+  Object.entries(KEY_NUMBER_FREQ).forEach(([kStr, freq]) => {
+    const k = Number(kStr);
+    [k, -k].forEach(m => {
+      if (m < MIN_M || m > MAX_M) return;
+      const relativeLikelihood = (normalPDF((m - mean) / std) / std) / Math.max(1e-9, neutralDensityAt(Math.abs(m)));
+      targets.set(m, Math.min(0.35, (freq / 2) * relativeLikelihood)); // freq/2 splits across +k/-k
+    });
+  });
+  // The mass added/removed at key numbers has to come from somewhere: spread it thinly across every
+  // non-key margin, proportional to that margin's own original share — not just the immediate
+  // neighbors, which breaks down when two key numbers sit next to each other (3&4, 6&7).
+  let excess = 0;
+  targets.forEach((target, m) => { excess += target - base.get(m); });
+  let nonKeyTotal = 0;
+  base.forEach((v, k) => { if (!isKey.has(k)) nonKeyTotal += v; });
+  const pmf = new Map();
+  base.forEach((v, k) => {
+    if (targets.has(k)) { pmf.set(k, targets.get(k)); return; }
+    const share = nonKeyTotal > 0 ? v / nonKeyTotal : 0;
+    pmf.set(k, Math.max(0, v - excess * share));
+  });
+  let total = 0; pmf.forEach(v => { total += v; });
+  if (total > 0) pmf.forEach((v, k) => pmf.set(k, v / total));
+  return pmf;
+}
 function spreadProbs(projection, line) {
   if (!projection) return null;
-  const z = (line - projection.expectedMargin) / MARGIN_STD_DEV;
-  const homeCoversProb = 1 - normalCDF(z);
+  const pmf = buildMarginDistribution(projection.expectedMargin, MARGIN_STD_DEV);
+  let coverProb = 0;
+  pmf.forEach((p, k) => { if (k > line) coverProb += p; });
+  const homeCoversProb = Math.min(0.99, Math.max(0.01, coverProb));
   return { home: homeCoversProb, away: 1 - homeCoversProb };
 }
 function totalProbs(projection, total) {
