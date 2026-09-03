@@ -240,7 +240,7 @@
 </main>
 
 <footer>
-  Model blends scoring differential (Pythagorean win expectation), season record, home/away-specific record, and recent form, then layers on rest since last game, travel distance/time-zone shift, and weather, with a calibration adjustment based on backtested results — it is not a guarantee and doesn't account for everything a sportsbook prices in. Schedule, scores and standings are pulled live from ESPN's public scoreboard where available; weather comes from Open-Meteo; moneyline odds come from Kalshi's public market data; spread and total odds need a free Odds API key (see button above) to go live. QB status and injury notes are still generated sample data. Use this as one input, not the whole decision. Bet only what you can afford to lose.
+  Model blends scoring differential (Pythagorean win expectation), season record, home/away-specific record, and recent form, then layers on rest since last game, travel distance/time-zone shift, and weather, with a calibration adjustment based on backtested results — it is not a guarantee and doesn't account for everything a sportsbook prices in. Schedule, scores and standings are pulled live from ESPN's public scoreboard where available; weather comes from Open-Meteo; moneyline odds come from Kalshi's public market data, with spread and total odds read from Kalshi's price ladder or, more reliably, a free Odds API key (see button above); starting-QB rating comes from ESPN's box-score leaders for each team's most recent game; the injury report loads live from ESPN when you expand a game's details panel. Any of these can silently fall back to a generated sample if the live source doesn't respond — nothing here is guaranteed. Use this as one input, not the whole decision. Bet only what you can afford to lose.
 </footer>
 
 <script>
@@ -281,7 +281,9 @@ const TEAMS = [
 ];
 const TEAM_BY_ID = new Map(TEAMS.map(t => [t.id, t]));
 const ABBR_TO_TEAM = new Map(TEAMS.map(t => [t.abbr, t]));
+const ESPN_ID_BY_TEAM = new Map(); // learned from scoreboard responses — ESPN's team ids don't match ours
 function espnAbbrFix(a) { return a === 'WSH' ? 'WAS' : a; } // ESPN uses WSH; we use WAS internally
+function toHttps(url) { return url ? url.replace(/^http:\/\//, 'https://') : url; } // ESPN core API $refs come back as http://
 
 const QB_FIRST = ["Jordan","Miles","Trevor","Caleb","Tyler","Brock","Derek","Marcus","Cole","Wyatt","Beau","Chase","Grant","Reid","Blake","Hunter","Colt","Ryder","Jace","Deshawn","Malik","Xavier","Isaiah","Elijah","Damian","Trey","Kellan","Sawyer","Nash","Rhett","Cash","Bo"];
 const QB_LAST = ["Harmon","Sterling","Kessler","Doyle","Whitfield","Marsh","Colton","Reyes","Fenwick","Voss","Hargrove","Brennan","Osei","Calloway","Danforth","Quale","Beckwith","Larkspur","Monroe","Ashby","Tolliver","Redding","Vance","Okafor","Sandoval","Priestly","Kwan","Ferro","Lund","Bishop","Rourke","Castellan"];
@@ -333,6 +335,8 @@ function parseEspnEvent(ev, week) {
   const awayTeam = ABBR_TO_TEAM.get(espnAbbrFix(awayC.team.abbreviation));
   const homeTeam = ABBR_TO_TEAM.get(espnAbbrFix(homeC.team.abbreviation));
   if (!awayTeam || !homeTeam) return null;
+  if (awayC.team.id) ESPN_ID_BY_TEAM.set(awayTeam.id, awayC.team.id);
+  if (homeC.team.id) ESPN_ID_BY_TEAM.set(homeTeam.id, homeC.team.id);
   const stateRaw = comp.status && comp.status.type && comp.status.type.state;
   const state = stateRaw === 'in' ? 'Live' : (stateRaw === 'post' ? 'Final' : 'Preview');
   const gameDate = ev.date || comp.date;
@@ -437,8 +441,8 @@ function updateDataStatus() {
   if (liveGames === 0) scheduleLabel = 'sample schedule (ESPN unreachable)';
   else if (liveGames === total) scheduleLabel = 'live ESPN schedule & scores';
   else scheduleLabel = `live ESPN schedule (${liveGames}/${total} games; rest sample)`;
-  const oddsLabel = getOddsApiKey() ? 'Kalshi + The Odds API' : 'Kalshi only — add a key for live spreads/totals';
-  el.textContent = `Data: ${scheduleLabel} · weather: Open-Meteo · odds: ${oddsLabel} · QBs/injuries: sample`;
+  const oddsLabel = getOddsApiKey() ? 'Kalshi + The Odds API' : 'Kalshi (add a key for steadier spreads/totals)';
+  el.textContent = `Data: ${scheduleLabel} · weather: Open-Meteo · odds: ${oddsLabel} · QBs: ESPN · injuries: ESPN (loads on expand)`;
 }
 
 /* ============================== Standings / form, as of a given week ============================== */
@@ -500,20 +504,47 @@ function computeBaseWinProb(awayStats, homeStats) {
   return { homeWinProb, awayWinProb: 1 - homeWinProb };
 }
 
-/* ============================== QB & injuries (sample — no live source wired) ============================== */
-function getQB(teamId) {
+/* ============================== QB (sample fallback + live via ESPN) ============================== */
+function getQBSample(teamId) {
   const first = QB_FIRST[(teamId - 1) % QB_FIRST.length];
   const last = QB_LAST[(teamId - 1) % QB_LAST.length];
   const rating = Math.round(78 + rand('qb-rating-' + teamId) * 30);
   return { name: `${first[0]}. ${last}`, fullName: `${first} ${last}`, rating };
 }
 function getQBStatus(teamId, week) {
+  // Sample flavor flag only — the live QB name/rating below doesn't carry a real status signal on its own.
   const r = rand(`qb-status-${teamId}-${week}`);
   if (r < 0.05) return 'Out';
   if (r < 0.12) return 'Questionable';
   return 'Healthy';
 }
-function getInjuryReport(teamId, week) {
+const qbLiveCache = new Map();
+async function fetchLiveQB(teamId) {
+  if (qbLiveCache.has(teamId)) return qbLiveCache.get(teamId);
+  const espnId = ESPN_ID_BY_TEAM.get(teamId);
+  if (!espnId) { qbLiveCache.set(teamId, null); return null; }
+  try {
+    const res = await fetch(`https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/${espnId}?enable=roster,projection,stats`);
+    if (!res.ok) throw new Error('espn team ' + res.status);
+    const data = await res.json();
+    const comp = data.team && data.team.nextEvent && data.team.nextEvent[0] && data.team.nextEvent[0].competitions && data.team.nextEvent[0].competitions[0];
+    const competitor = comp && comp.competitors && comp.competitors.find(c => String(c.team.id) === String(espnId));
+    const qbLeader = competitor && competitor.leaders && competitor.leaders.find(l => l.name === 'quarterbackRating');
+    const entry = qbLeader && qbLeader.leaders && qbLeader.leaders[0];
+    let result = null;
+    if (entry && entry.athlete && typeof entry.value === 'number') {
+      result = { fullName: entry.athlete.displayName, rating: entry.value };
+    }
+    qbLiveCache.set(teamId, result);
+    return result;
+  } catch (e) {
+    qbLiveCache.set(teamId, null);
+    return null;
+  }
+}
+
+/* ============================== Injuries (sample fallback + live via ESPN core API, on-demand) ============================== */
+function getInjuryReportSample(teamId, week) {
   const positions = ['WR1', 'RB1', 'LT', 'CB1', 'TE1'];
   const rng = makeRng(`injury-${teamId}-${week}`);
   const entries = [];
@@ -523,6 +554,48 @@ function getInjuryReport(teamId, week) {
     else if (r < 0.22) entries.push({ pos, status: 'Questionable' });
   });
   return entries.slice(0, 3);
+}
+const injuryLiveCache = new Map();
+async function fetchLiveInjuries(teamId) {
+  if (injuryLiveCache.has(teamId)) return injuryLiveCache.get(teamId);
+  const espnId = ESPN_ID_BY_TEAM.get(teamId);
+  if (!espnId) { injuryLiveCache.set(teamId, null); return null; }
+  try {
+    const listRes = await fetch(`https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/teams/${espnId}/injuries?limit=6`);
+    if (!listRes.ok) throw new Error('injuries list ' + listRes.status);
+    const listData = await listRes.json();
+    const refs = (listData.items || []).slice(0, 4).map(x => toHttps(x.$ref)).filter(Boolean);
+    const details = await Promise.all(refs.map(async ref => {
+      try { const r = await fetch(ref); return r.ok ? await r.json() : null; } catch (e) { return null; }
+    }));
+    const entries = [];
+    for (const d of details) {
+      if (!d || !d.athlete || !d.athlete.$ref) continue;
+      try {
+        const ar = await fetch(toHttps(d.athlete.$ref));
+        if (!ar.ok) continue;
+        const athlete = await ar.json();
+        entries.push({
+          name: athlete.shortName || athlete.displayName || 'Unknown',
+          pos: (athlete.position && athlete.position.abbreviation) || '',
+          status: (d.type && d.type.abbreviation) || d.status || 'Q'
+        });
+      } catch (e) { /* skip this one player */ }
+    }
+    injuryLiveCache.set(teamId, entries);
+    return entries;
+  } catch (e) {
+    injuryLiveCache.set(teamId, null);
+    return null;
+  }
+}
+function injuryChipsHTML(entries) {
+  if (!entries || !entries.length) return '<span style="color:var(--ink-soft);">Nothing notable</span>';
+  return entries.map(e => {
+    const label = e.name ? `${e.pos ? e.pos + ' ' : ''}${e.name}` : (e.pos || '');
+    const cls = /out|ir|reserve/i.test(e.status) ? 'chip-neg' : 'chip-out';
+    return `<span class="chip ${cls}">${label} ${e.status}</span>`;
+  }).join('');
 }
 
 /* ============================== LIVE: weather via Open-Meteo ============================== */
@@ -652,6 +725,43 @@ function findKalshiEventForGame(events, g) {
     return blob.includes(away.name.toUpperCase()) && blob.includes(home.name.toUpperCase());
   });
 }
+// Confirmed live against Kalshi's public API: prices come back as dollar-string fields (e.g. "0.3100" = 31%),
+// and threshold/ladder markets carry strike_type ('greater'/'less'/'between') plus floor_strike/cap_strike.
+// A market with no strike_type at all is the plain two-way winner market.
+function kalshiMidProb(m) {
+  const bid = parseFloat(m.yes_bid_dollars), ask = parseFloat(m.yes_ask_dollars);
+  if (!isNaN(bid) && !isNaN(ask) && (bid > 0 || ask > 0)) return (bid + ask) / 2;
+  const last = parseFloat(m.last_price_dollars);
+  return isNaN(last) ? null : last;
+}
+function classifyKalshiMarket(m, awayAbbr, homeAbbr) {
+  if (!m.strike_type) return { kind: 'winner' };
+  const blob = `${m.title || ''} ${m.yes_sub_title || ''} ${m.no_sub_title || ''}`.toUpperCase();
+  const threshold = (m.floor_strike !== undefined && m.floor_strike !== null) ? m.floor_strike : m.cap_strike;
+  if (threshold == null) return { kind: 'other' };
+  if (/TOTAL|POINTS|OVER|UNDER/.test(blob)) return { kind: 'total', threshold };
+  if (blob.includes(awayAbbr) || blob.includes(homeAbbr)) return { kind: 'spread', threshold, blob };
+  return { kind: 'other' };
+}
+async function fetchKalshiLadder(g, kind) {
+  try {
+    const events = await getKalshiEvents(false);
+    const ev = findKalshiEventForGame(events, g);
+    if (!ev || !ev.markets || !ev.markets.length) return null;
+    const away = TEAM_BY_ID.get(g.awayId), home = TEAM_BY_ID.get(g.homeId);
+    let best = null, bestDist = Infinity;
+    for (const m of ev.markets) {
+      const info = classifyKalshiMarket(m, away.abbr, home.abbr);
+      if (info.kind !== kind) continue;
+      const p = kalshiMidProb(m);
+      if (p === null) continue;
+      // The line the market is "at" is the threshold whose price sits closest to a coin flip.
+      const dist = Math.abs(p - 0.5);
+      if (dist < bestDist) { bestDist = dist; best = { info, prob: p }; }
+    }
+    return best;
+  } catch (e) { return null; }
+}
 
 /* ============================== Optional: The Odds API (for moneyline fallback + spread/total) ============================== */
 function getOddsApiKey() { return localStorage.getItem('gridironOddsApiKeyV1') || ''; }
@@ -692,15 +802,13 @@ async function fetchMoneylineOdds(g, forceRefresh) {
     const events = await getKalshiEvents(forceRefresh);
     const ev = findKalshiEventForGame(events, g);
     if (ev && ev.markets && ev.markets.length) {
-      // Best-effort: the game-winner market is typically the one whose ticker has no numeric line suffix.
-      const winnerMkt = ev.markets.find(m => !/\d/.test((m.ticker || '').split('-').slice(-1)[0])) || ev.markets[0];
-      const bid = winnerMkt.yes_bid, ask = winnerMkt.yes_ask;
-      if (typeof bid === 'number' && typeof ask === 'number' && (bid > 0 || ask > 0)) {
-        const yesProb = ((bid + ask) / 2) / 100;
-        const home = TEAM_BY_ID.get(g.homeId);
+      const away = TEAM_BY_ID.get(g.awayId), home = TEAM_BY_ID.get(g.homeId);
+      const winnerMkt = ev.markets.find(m => classifyKalshiMarket(m, away.abbr, home.abbr).kind === 'winner');
+      const p = winnerMkt ? kalshiMidProb(winnerMkt) : null;
+      if (winnerMkt && p !== null) {
         const subtitle = (winnerMkt.yes_sub_title || winnerMkt.title || '').toUpperCase();
         const yesIsHome = subtitle.includes(home.abbr) || subtitle.includes(home.name.toUpperCase());
-        const homeProb = Math.min(0.97, Math.max(0.03, yesIsHome ? yesProb : 1 - yesProb));
+        const homeProb = Math.min(0.97, Math.max(0.03, yesIsHome ? p : 1 - p));
         const hA = probToAmerican(homeProb), aA = probToAmerican(1 - homeProb);
         if (hA && aA) return { available: true, source: 'kalshi', homeAmerican: hA, awayAmerican: aA };
       }
@@ -725,6 +833,7 @@ async function fetchMoneylineOdds(g, forceRefresh) {
   return { available: false };
 }
 async function fetchSpreadOdds(g, forceRefresh) {
+  // Odds API first when a key is set (documented, unambiguous field names).
   try {
     const oddsGames = await getOddsApiGames(forceRefresh);
     if (oddsGames) {
@@ -737,6 +846,19 @@ async function fetchSpreadOdds(g, forceRefresh) {
         const awayO = spreads.outcomes.find(o => o.name.toUpperCase().includes(away.name.toUpperCase()));
         if (homeO && awayO) return { available: true, source: 'oddsapi (' + book.title + ')', line: homeO.point, homeAmerican: homeO.price, awayAmerican: awayO.price };
       }
+    }
+  } catch (e) { /* fall through to Kalshi */ }
+  // Kalshi ladder — no key needed, but reading "which threshold is the line" is a best-effort heuristic.
+  try {
+    const home = TEAM_BY_ID.get(g.homeId);
+    const best = await fetchKalshiLadder(g, 'spread');
+    if (best) {
+      const yesIsHome = (best.info.blob || '').includes(home.abbr);
+      const yesProb = Math.min(0.97, Math.max(0.03, best.prob));
+      const homeProb = yesIsHome ? yesProb : 1 - yesProb;
+      const hA = probToAmerican(homeProb), aA = probToAmerican(1 - homeProb);
+      const line = yesIsHome ? -best.info.threshold : best.info.threshold;
+      if (hA && aA) return { available: true, source: 'kalshi (ladder read)', line, homeAmerican: hA, awayAmerican: aA };
     }
   } catch (e) { /* fall through */ }
   return { available: false };
@@ -753,6 +875,14 @@ async function fetchTotalOdds(g, forceRefresh) {
         const underO = totals.outcomes.find(o => o.name.toUpperCase() === 'UNDER');
         if (overO && underO) return { available: true, source: 'oddsapi (' + book.title + ')', line: overO.point, overAmerican: overO.price, underAmerican: underO.price };
       }
+    }
+  } catch (e) { /* fall through to Kalshi */ }
+  try {
+    const best = await fetchKalshiLadder(g, 'total');
+    if (best) {
+      const overProb = Math.min(0.97, Math.max(0.03, best.prob));
+      const oA = probToAmerican(overProb), uA = probToAmerican(1 - overProb);
+      if (oA && uA) return { available: true, source: 'kalshi (ladder read)', line: best.info.threshold, overAmerican: oA, underAmerican: uA };
     }
   } catch (e) { /* fall through */ }
   return { available: false };
@@ -789,19 +919,30 @@ function initials(fullName) {
   const parts = fullName.trim().split(' ');
   return parts.length > 1 ? (parts[0][0] + parts[parts.length - 1][0]).toUpperCase() : fullName.slice(0, 2).toUpperCase();
 }
-function qbLineHTML(teamId, week) {
-  const qb = getQB(teamId);
+function qbInfoInner(shortName, rating, flagHtml) {
+  const ratingStr = typeof rating === 'number' ? rating.toFixed(1) : rating;
+  return `<span class="q-name">${shortName}</span>${flagHtml || ''}<br><span class="q-stats">Rating ${ratingStr}</span>`;
+}
+function qbLineHTML(teamId, week, avatarId, infoId) {
+  const qb = getQBSample(teamId);
   const status = getQBStatus(teamId, week);
   const flag = status !== 'Healthy' ? `<span class="q-flag"> ${status === 'Out' ? '(OUT)' : '(Q)'}</span>` : '';
   return `
     <div class="qb-line">
-      <span class="qb-avatar">${initials(qb.fullName)}</span>
-      <span class="qb-info">
-        <span class="q-name">${qb.name}</span>${flag}<br>
-        <span class="q-stats">Rating ${qb.rating.toFixed(1)}</span>
-      </span>
+      <span class="qb-avatar" id="${avatarId}">${initials(qb.fullName)}</span>
+      <span class="qb-info" id="${infoId}">${qbInfoInner(qb.name, qb.rating, flag)}</span>
     </div>
   `;
+}
+function patchQBLine(avatarId, infoId, teamId) {
+  fetchLiveQB(teamId).then(live => {
+    if (!live) return;
+    const infoEl = document.getElementById(infoId);
+    const avatarEl = document.getElementById(avatarId);
+    const shortName = live.fullName.split(' ').length > 1 ? `${live.fullName[0]}. ${live.fullName.split(' ').slice(-1)[0]}` : live.fullName;
+    if (infoEl) infoEl.innerHTML = qbInfoInner(shortName, live.rating, '');
+    if (avatarEl) avatarEl.textContent = initials(live.fullName);
+  });
 }
 
 let currentWeek = 1;
@@ -850,12 +991,14 @@ function loadGames() {
       <div class="divider-col"></div>
       <div class="matchup-stack">
         <div class="matchup-time">${statusLabel(g)}</div>
-        ${qbLineHTML(g.awayId, g.week)}
-        ${qbLineHTML(g.homeId, g.week)}
+        ${qbLineHTML(g.awayId, g.week, `qbav-${g.gamePk}-a`, `qbin-${g.gamePk}-a`)}
+        ${qbLineHTML(g.homeId, g.week, `qbav-${g.gamePk}-h`, `qbin-${g.gamePk}-h`)}
       </div>
     `;
     row.addEventListener('click', () => selectGame(g.gamePk, row));
     currentRowPair.appendChild(row);
+    patchQBLine(`qbav-${g.gamePk}-a`, `qbin-${g.gamePk}-a`, g.awayId);
+    patchQBLine(`qbav-${g.gamePk}-h`, `qbin-${g.gamePk}-h`, g.homeId);
   });
 }
 
@@ -1015,10 +1158,10 @@ async function renderMatchup(gamePk) {
         <summary>Game details — QBs, weather, rest &amp; travel, injuries</summary>
         <div class="details-inner">
           <div class="detail-block">
-            <div class="detail-title">Starting quarterbacks (sample)</div>
+            <div class="detail-title">Starting quarterbacks</div>
             <div class="detail-cols">
-              <div>${getQB(g.awayId).fullName} — Rating ${getQB(g.awayId).rating.toFixed(1)}${awayQBStatus !== 'Healthy' ? `<br><span style="color:var(--amber);">${awayQBStatus}</span>` : ''}</div>
-              <div>${getQB(g.homeId).fullName} — Rating ${getQB(g.homeId).rating.toFixed(1)}${homeQBStatus !== 'Healthy' ? `<br><span style="color:var(--amber);">${homeQBStatus}</span>` : ''}</div>
+              <div id="qbdetail-${g.gamePk}-a">${getQBSample(g.awayId).fullName} — Rating ${getQBSample(g.awayId).rating.toFixed(1)}${awayQBStatus !== 'Healthy' ? `<br><span style="color:var(--amber);">${awayQBStatus}</span>` : ''}</div>
+              <div id="qbdetail-${g.gamePk}-h">${getQBSample(g.homeId).fullName} — Rating ${getQBSample(g.homeId).rating.toFixed(1)}${homeQBStatus !== 'Healthy' ? `<br><span style="color:var(--amber);">${homeQBStatus}</span>` : ''}</div>
             </div>
           </div>
 
@@ -1043,11 +1186,12 @@ async function renderMatchup(gamePk) {
           </div>
 
           <div class="detail-block">
-            <div class="detail-title">Injury report (sample)</div>
+            <div class="detail-title">Injury report</div>
             <div class="detail-cols">
-              <div class="chip-row">${getInjuryReport(g.awayId, g.week).map(e => `<span class="chip ${e.status === 'Out' ? 'chip-neg' : 'chip-out'}">${e.pos} ${e.status}</span>`).join('') || '<span style="color:var(--ink-soft);">Nothing notable</span>'}</div>
-              <div class="chip-row">${getInjuryReport(g.homeId, g.week).map(e => `<span class="chip ${e.status === 'Out' ? 'chip-neg' : 'chip-out'}">${e.pos} ${e.status}</span>`).join('') || '<span style="color:var(--ink-soft);">Nothing notable</span>'}</div>
+              <div class="chip-row" id="injury-${g.gamePk}-a">${injuryChipsHTML(getInjuryReportSample(g.awayId, g.week))}</div>
+              <div class="chip-row" id="injury-${g.gamePk}-h">${injuryChipsHTML(getInjuryReportSample(g.homeId, g.week))}</div>
             </div>
+            <div style="font-size:10px; color:var(--ink-soft); margin-top:6px;">Expand this panel to pull the live report — falls back to a sample estimate if ESPN's feed doesn't respond.</div>
           </div>
         </div>
       </details>
@@ -1055,6 +1199,31 @@ async function renderMatchup(gamePk) {
   `;
 
   currentMatchup = { gamePk, awayAbbr: away.abbr, homeAbbr: home.abbr, awayName: `${away.city} ${away.name}`, homeName: `${home.city} ${home.name}`, gameDate: g.gameDate };
+
+  // Live QB name/rating patches in once ESPN responds; sample stays if it doesn't.
+  [[g.awayId, 'a'], [g.homeId, 'h']].forEach(([teamId, side]) => {
+    fetchLiveQB(teamId).then(live => {
+      if (!live) return;
+      const cell = document.getElementById(`qbdetail-${g.gamePk}-${side}`);
+      if (cell) cell.innerHTML = `${live.fullName} — Rating ${live.rating.toFixed(1)}`;
+    });
+  });
+
+  // Live injury report loads only once this panel is actually opened, to keep initial render fast.
+  const detailsEl = el.querySelector('.game-details');
+  let injuriesRequested = false;
+  detailsEl.addEventListener('toggle', () => {
+    if (!detailsEl.open || injuriesRequested) return;
+    injuriesRequested = true;
+    const awayBox = document.getElementById(`injury-${g.gamePk}-a`);
+    const homeBox = document.getElementById(`injury-${g.gamePk}-h`);
+    if (awayBox) awayBox.innerHTML = '<span style="color:var(--ink-soft);">Loading live injury report…</span>';
+    if (homeBox) homeBox.innerHTML = '<span style="color:var(--ink-soft);">Loading live injury report…</span>';
+    Promise.all([fetchLiveInjuries(g.awayId), fetchLiveInjuries(g.homeId)]).then(([awayLive, homeLive]) => {
+      if (awayBox) awayBox.innerHTML = injuryChipsHTML(awayLive && awayLive.length ? awayLive : getInjuryReportSample(g.awayId, g.week));
+      if (homeBox) homeBox.innerHTML = injuryChipsHTML(homeLive && homeLive.length ? homeLive : getInjuryReportSample(g.homeId, g.week));
+    });
+  });
 
   el.querySelectorAll('.bet-tab').forEach(tab => {
     tab.addEventListener('click', () => {
