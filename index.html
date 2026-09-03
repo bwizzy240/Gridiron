@@ -240,7 +240,7 @@
 </main>
 
 <footer>
-  Model blends scoring differential (Pythagorean win expectation), season record, home/away-specific record, and recent form, adds a small home-field edge and a preseason strength prior (from Kalshi's season win-total market, fading out as real games accumulate), then layers on rest since last game, travel distance/time-zone shift, and weather, with a calibration adjustment based on backtested results — it is not a guarantee and doesn't account for everything a sportsbook prices in. Schedule, scores and standings are pulled live from ESPN's public scoreboard where available; weather comes from Open-Meteo; moneyline odds and the preseason prior come from Kalshi's public market data via a same-origin proxy; spread and total odds need a free Odds API key (see button above); starting-QB rating comes from ESPN's box-score leaders for each team's most recent game; the injury report loads live from ESPN when you expand a game's details panel. Any of these can silently fall back to a generated sample or a neutral default if the live source doesn't respond — nothing here is guaranteed. Use this as one input, not the whole decision. Bet only what you can afford to lose.
+  Model blends scoring differential (Pythagorean win expectation), season record, home/away-specific record, and recent form, adds a small home-field edge and a preseason strength prior (from Kalshi's season win-total market, fading out as real games accumulate), then layers on rest since last game, travel distance/time-zone shift, weather, and starting-QB status; a QB confirmed out shifts the number, with a calibration adjustment based on backtested results — it is not a guarantee and doesn't account for everything a sportsbook prices in. Schedule, scores and standings are pulled live from ESPN's public scoreboard where available; weather comes from Open-Meteo; moneyline odds and the preseason prior come from Kalshi's public market data via a same-origin proxy; spread and total odds need a free Odds API key (see button above); the starting QB comes from ESPN's actual depth chart (ranked, not just whoever played most recently) along with that player's own current status; the injury report loads live from ESPN when you expand a game's details panel. Any of these can silently fall back to a generated sample or a neutral default if the live source doesn't respond — nothing here is guaranteed. Use this as one input, not the whole decision. Bet only what you can afford to lose.
 </footer>
 
 <script>
@@ -516,37 +516,54 @@ function computeBaseWinProb(awayStats, homeStats, awayTeamId, homeTeamId) {
   return { homeWinProb, awayWinProb: 1 - homeWinProb };
 }
 
-/* ============================== QB (sample fallback + live via ESPN) ============================== */
+/* ============================== QB (sample fallback + live via ESPN depth chart) ============================== */
 function getQBSample(teamId) {
   const first = QB_FIRST[(teamId - 1) % QB_FIRST.length];
   const last = QB_LAST[(teamId - 1) % QB_LAST.length];
-  const rating = Math.round(78 + rand('qb-rating-' + teamId) * 30);
-  return { name: `${first[0]}. ${last}`, fullName: `${first} ${last}`, rating };
+  return { name: `${first[0]}. ${last}`, fullName: `${first} ${last}` };
 }
-function getQBStatus(teamId, week) {
-  // Sample flavor flag only — the live QB name/rating below doesn't carry a real status signal on its own.
+function getQBStatusSample(teamId, week) {
   const r = rand(`qb-status-${teamId}-${week}`);
   if (r < 0.05) return 'Out';
   if (r < 0.12) return 'Questionable';
   return 'Healthy';
 }
+// Maps ESPN's own status text to our three-tier severity, used both for display and for the
+// model's QB-out win-probability shift.
+function qbStatusSeverity(statusName) {
+  if (!statusName) return 'Healthy';
+  if (/injured reserve|^out$|suspend|physically unable|reserve/i.test(statusName)) return 'Out';
+  if (/day-to-day|questionable|doubtful/i.test(statusName)) return 'Questionable';
+  return 'Healthy';
+}
 const qbLiveCache = new Map();
+// Pulls the real QB1 from ESPN's depth chart (ranked, not just whoever played most recently —
+// important because during preseason a backup often has the bigger box score while the actual
+// starter sits, which is what was showing the wrong QB before this fix), then fetches that
+// specific player's own current status (Active/Questionable/Out/IR/etc).
 async function fetchLiveQB(teamId) {
   if (qbLiveCache.has(teamId)) return qbLiveCache.get(teamId);
   const espnId = ESPN_ID_BY_TEAM.get(teamId);
   if (!espnId) { qbLiveCache.set(teamId, null); return null; }
   try {
-    const res = await fetch(`https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/${espnId}?enable=roster,projection,stats`);
-    if (!res.ok) throw new Error('espn team ' + res.status);
-    const data = await res.json();
-    const comp = data.team && data.team.nextEvent && data.team.nextEvent[0] && data.team.nextEvent[0].competitions && data.team.nextEvent[0].competitions[0];
-    const competitor = comp && comp.competitors && comp.competitors.find(c => String(c.team.id) === String(espnId));
-    const qbLeader = competitor && competitor.leaders && competitor.leaders.find(l => l.name === 'quarterbackRating');
-    const entry = qbLeader && qbLeader.leaders && qbLeader.leaders[0];
-    let result = null;
-    if (entry && entry.athlete && typeof entry.value === 'number') {
-      result = { fullName: entry.athlete.displayName, rating: entry.value };
+    const dcRes = await fetch(`https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/seasons/${SEASON_YEAR}/teams/${espnId}/depthcharts`);
+    if (!dcRes.ok) throw new Error('depthchart ' + dcRes.status);
+    const dcData = await dcRes.json();
+    let starter = null;
+    for (const chart of (dcData.items || [])) {
+      const qbGroup = chart.positions && chart.positions.qb;
+      const athletes = qbGroup && qbGroup.athletes;
+      if (athletes && athletes.length) {
+        starter = athletes.reduce((best, a) => (!best || a.rank < best.rank) ? a : best, null);
+        if (starter) break;
+      }
     }
+    if (!starter || !starter.athlete || !starter.athlete.$ref) throw new Error('no QB in depth chart');
+    const athRes = await fetch(toHttps(starter.athlete.$ref));
+    if (!athRes.ok) throw new Error('athlete ' + athRes.status);
+    const athlete = await athRes.json();
+    const statusName = (athlete.status && athlete.status.name) || 'Active';
+    const result = { fullName: athlete.fullName || athlete.displayName, statusName, severity: qbStatusSeverity(statusName) };
     qbLiveCache.set(teamId, result);
     return result;
   } catch (e) {
@@ -996,18 +1013,21 @@ function initials(fullName) {
   const parts = fullName.trim().split(' ');
   return parts.length > 1 ? (parts[0][0] + parts[parts.length - 1][0]).toUpperCase() : fullName.slice(0, 2).toUpperCase();
 }
-function qbInfoInner(shortName, rating, flagHtml) {
-  const ratingStr = typeof rating === 'number' ? rating.toFixed(1) : rating;
-  return `<span class="q-name">${shortName}</span>${flagHtml || ''}<br><span class="q-stats">Rating ${ratingStr}</span>`;
+function qbInfoInner(shortName, statusWord, flagHtml) {
+  return `<span class="q-name">${shortName}</span>${flagHtml || ''}<br><span class="q-stats">${statusWord}</span>`;
+}
+function qbFlagHtml(severity) {
+  if (severity === 'Out') return `<span class="q-flag"> (OUT)</span>`;
+  if (severity === 'Questionable') return `<span class="q-flag"> (Q)</span>`;
+  return '';
 }
 function qbLineHTML(teamId, week, avatarId, infoId) {
   const qb = getQBSample(teamId);
-  const status = getQBStatus(teamId, week);
-  const flag = status !== 'Healthy' ? `<span class="q-flag"> ${status === 'Out' ? '(OUT)' : '(Q)'}</span>` : '';
+  const severity = getQBStatusSample(teamId, week);
   return `
     <div class="qb-line">
       <span class="qb-avatar" id="${avatarId}">${initials(qb.fullName)}</span>
-      <span class="qb-info" id="${infoId}">${qbInfoInner(qb.name, qb.rating, flag)}</span>
+      <span class="qb-info" id="${infoId}">${qbInfoInner(qb.name, 'Sample', qbFlagHtml(severity))}</span>
     </div>
   `;
 }
@@ -1017,7 +1037,7 @@ function patchQBLine(avatarId, infoId, teamId) {
     const infoEl = document.getElementById(infoId);
     const avatarEl = document.getElementById(avatarId);
     const shortName = live.fullName.split(' ').length > 1 ? `${live.fullName[0]}. ${live.fullName.split(' ').slice(-1)[0]}` : live.fullName;
-    if (infoEl) infoEl.innerHTML = qbInfoInner(shortName, live.rating, '');
+    if (infoEl) infoEl.innerHTML = qbInfoInner(shortName, live.statusName, qbFlagHtml(live.severity));
     if (avatarEl) avatarEl.textContent = initials(live.fullName);
   });
 }
@@ -1112,10 +1132,12 @@ async function renderMatchup(gamePk) {
   const { homeWinProb: baseHomeWinProb } = computeBaseWinProb(awayStats, homeStats, g.awayId, g.homeId);
   let homeWinProb = baseHomeWinProb;
 
-  const awayQBStatus = getQBStatus(g.awayId, g.week);
-  const homeQBStatus = getQBStatus(g.homeId, g.week);
-  if (awayQBStatus === 'Out') homeWinProb = Math.min(0.95, homeWinProb + 0.10);
-  if (homeQBStatus === 'Out') homeWinProb = Math.max(0.05, homeWinProb - 0.10);
+  const [awayQBLive, homeQBLive] = await Promise.all([fetchLiveQB(g.awayId), fetchLiveQB(g.homeId)]);
+  const awayQBSample = getQBSample(g.awayId), homeQBSample = getQBSample(g.homeId);
+  const awaySeverity = awayQBLive ? awayQBLive.severity : getQBStatusSample(g.awayId, g.week);
+  const homeSeverity = homeQBLive ? homeQBLive.severity : getQBStatusSample(g.homeId, g.week);
+  if (awaySeverity === 'Out') homeWinProb = Math.min(0.95, homeWinProb + 0.10);
+  if (homeSeverity === 'Out') homeWinProb = Math.max(0.05, homeWinProb - 0.10);
 
   function getRestDays(teamId) {
     const prior = ALL_GAMES.filter(x => (x.homeId === teamId || x.awayId === teamId) && new Date(x.gameDate) < new Date(g.gameDate))
@@ -1184,7 +1206,7 @@ async function renderMatchup(gamePk) {
           <div style="text-align:right;"><span class="pct home">${homePctDisplay}%</span><span class="abbr">${home.abbr}</span></div>
         </div>
         <div class="probbar"><div class="away" style="width:${awayPctDisplay}%"></div><div class="home" style="width:${homePctDisplay}%"></div></div>
-        <div class="probbar-caption">Chance to win — based on scoring differential, recent form, home field, QB status (sample), rest &amp; travel${(TEAM_PRIOR_WINPCT.has(g.awayId) || TEAM_PRIOR_WINPCT.has(g.homeId)) ? ', and a preseason strength prior that fades out as the season goes on' : ''}${priorMeeting ? `<br>Earlier meeting: ${priorMeeting.awayScore}-${priorMeeting.homeScore} (${TEAM_BY_ID.get(priorMeeting.awayId).abbr} @ ${TEAM_BY_ID.get(priorMeeting.homeId).abbr}, Week ${priorMeeting.week})` : ''}</div>
+        <div class="probbar-caption">Chance to win — based on scoring differential, recent form, home field, QB status, rest &amp; travel${(TEAM_PRIOR_WINPCT.has(g.awayId) || TEAM_PRIOR_WINPCT.has(g.homeId)) ? ', and a preseason strength prior that fades out as the season goes on' : ''}${priorMeeting ? `<br>Earlier meeting: ${priorMeeting.awayScore}-${priorMeeting.homeScore} (${TEAM_BY_ID.get(priorMeeting.awayId).abbr} @ ${TEAM_BY_ID.get(priorMeeting.homeId).abbr}, Week ${priorMeeting.week})` : ''}</div>
       </div>
 
       <div class="bet-tabs">
@@ -1235,10 +1257,10 @@ async function renderMatchup(gamePk) {
         <summary>Game details — QBs, weather, rest &amp; travel, injuries</summary>
         <div class="details-inner">
           <div class="detail-block">
-            <div class="detail-title">Starting quarterbacks</div>
+            <div class="detail-title">Starting quarterbacks${(awayQBLive || homeQBLive) ? ' (live where available)' : ' (sample)'}</div>
             <div class="detail-cols">
-              <div id="qbdetail-${g.gamePk}-a">${getQBSample(g.awayId).fullName} — Rating ${getQBSample(g.awayId).rating.toFixed(1)}${awayQBStatus !== 'Healthy' ? `<br><span style="color:var(--amber);">${awayQBStatus}</span>` : ''}</div>
-              <div id="qbdetail-${g.gamePk}-h">${getQBSample(g.homeId).fullName} — Rating ${getQBSample(g.homeId).rating.toFixed(1)}${homeQBStatus !== 'Healthy' ? `<br><span style="color:var(--amber);">${homeQBStatus}</span>` : ''}</div>
+              <div>${awayQBLive ? awayQBLive.fullName : awayQBSample.fullName}${awaySeverity !== 'Healthy' ? `<br><span style="color:var(--amber);">${awayQBLive ? awayQBLive.statusName : awaySeverity}</span>` : ''}</div>
+              <div>${homeQBLive ? homeQBLive.fullName : homeQBSample.fullName}${homeSeverity !== 'Healthy' ? `<br><span style="color:var(--amber);">${homeQBLive ? homeQBLive.statusName : homeSeverity}</span>` : ''}</div>
             </div>
           </div>
 
@@ -1276,15 +1298,6 @@ async function renderMatchup(gamePk) {
   `;
 
   currentMatchup = { gamePk, awayAbbr: away.abbr, homeAbbr: home.abbr, awayName: `${away.city} ${away.name}`, homeName: `${home.city} ${home.name}`, gameDate: g.gameDate };
-
-  // Live QB name/rating patches in once ESPN responds; sample stays if it doesn't.
-  [[g.awayId, 'a'], [g.homeId, 'h']].forEach(([teamId, side]) => {
-    fetchLiveQB(teamId).then(live => {
-      if (!live) return;
-      const cell = document.getElementById(`qbdetail-${g.gamePk}-${side}`);
-      if (cell) cell.innerHTML = `${live.fullName} — Rating ${live.rating.toFixed(1)}`;
-    });
-  });
 
   // Live injury report loads only once this panel is actually opened, to keep initial render fast.
   const detailsEl = el.querySelector('.game-details');
