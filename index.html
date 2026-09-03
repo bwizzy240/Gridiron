@@ -712,6 +712,12 @@ async function getKalshiEvents(forceRefresh) {
   if (!kalshiEventsPromise) kalshiEventsPromise = loadKalshiEvents();
   return kalshiEventsPromise;
 }
+const KALSHI_PROXIES = [
+  url => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(url),
+  url => 'https://corsproxy.io/?url=' + encodeURIComponent(url),
+  url => 'https://api.codetabs.com/v1/proxy?quest=' + encodeURIComponent(url),
+  url => 'https://thingproxy.freeboard.io/fetch/' + url
+];
 async function loadKalshiEvents() {
   const url = 'https://external-api.kalshi.com/trade-api/v2/events?series_ticker=KXNFLGAME&status=open&with_nested_markets=true&limit=200';
   try {
@@ -723,22 +729,25 @@ async function loadKalshiEvents() {
     updateDataStatus();
     return d.events || [];
   } catch (directErr) {
-    console.warn('[Gridiron] Direct Kalshi fetch failed (often a CORS block from the browser) — trying a CORS proxy. Error:', directErr);
-    try {
-      const proxyUrl = 'https://api.allorigins.win/raw?url=' + encodeURIComponent(url);
-      const r2 = await fetch(proxyUrl);
-      if (!r2.ok) throw new Error('proxy ' + r2.status);
-      const d2 = await r2.json();
-      kalshiStatus = 'proxied';
-      console.info('[Gridiron] Kalshi events loaded via CORS proxy:', (d2.events || []).length, d2.events);
-      updateDataStatus();
-      return d2.events || [];
-    } catch (proxyErr) {
-      kalshiStatus = 'error';
-      console.error('[Gridiron] Kalshi fetch failed both directly and via proxy:', proxyErr);
-      updateDataStatus();
-      return [];
+    console.warn('[Gridiron] Direct Kalshi fetch failed (often a CORS block from the browser) — trying CORS proxies one by one. Error:', directErr);
+    for (let i = 0; i < KALSHI_PROXIES.length; i++) {
+      try {
+        const proxyUrl = KALSHI_PROXIES[i](url);
+        const r2 = await fetch(proxyUrl);
+        if (!r2.ok) throw new Error('proxy ' + r2.status);
+        const d2 = await r2.json();
+        kalshiStatus = 'proxied';
+        console.info(`[Gridiron] Kalshi events loaded via proxy #${i + 1}:`, (d2.events || []).length, d2.events);
+        updateDataStatus();
+        return d2.events || [];
+      } catch (proxyErr) {
+        console.warn(`[Gridiron] Proxy #${i + 1} failed, trying the next one. Error:`, proxyErr);
+      }
     }
+    kalshiStatus = 'error';
+    console.error('[Gridiron] Kalshi fetch failed directly and via every proxy.');
+    updateDataStatus();
+    return [];
   }
 }
 function findKalshiEventForGame(events, g) {
