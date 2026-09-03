@@ -315,13 +315,24 @@ function shuffleWithRng(arr, rng) {
 }
 
 /* ============================== LIVE: ESPN schedule/scores ============================== */
-async function espnFetchWeek(week) {
-  const url = `https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?seasontype=2&week=${week}&dates=${SEASON_YEAR}&limit=100`;
+async function espnFetchWeek(week, year = SEASON_YEAR) {
+  const url = `https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?seasontype=2&week=${week}&dates=${year}&limit=100`;
   const res = await fetch(url);
   if (!res.ok) throw new Error('ESPN scoreboard ' + res.status);
   const data = await res.json();
   const events = data.events || [];
   return events.map(ev => parseEspnEvent(ev, week)).filter(Boolean);
+}
+// Historical seasons for backtesting, kept completely separate from the live ALL_GAMES/GAMES_BY_WEEK
+// used everywhere else in the app so nothing here can cross-contaminate the current season's data.
+const historicalSeasonsCache = new Map(); // year -> array of games across all 18 weeks
+async function loadHistoricalSeason(year) {
+  if (historicalSeasonsCache.has(year)) return historicalSeasonsCache.get(year);
+  const results = await Promise.allSettled(Array.from({ length: 18 }, (_, i) => espnFetchWeek(i + 1, year)));
+  const games = [];
+  results.forEach(r => { if (r.status === 'fulfilled') games.push(...r.value); });
+  historicalSeasonsCache.set(year, games);
+  return games;
 }
 function parseEspnEvent(ev, week) {
   const comp = ev.competitions && ev.competitions[0];
@@ -445,13 +456,13 @@ function updateDataStatus() {
 }
 
 /* ============================== Standings / form, as of a given week ============================== */
-function computeStandingsThroughWeek(week) {
+function computeStandingsThroughWeek(week, gamesSource = ALL_GAMES) {
   const map = new Map();
   TEAMS.forEach(t => map.set(t.id, {
     wins: 0, losses: 0, ties: 0, pointsFor: 0, pointsAgainst: 0,
     homeW: 0, homeL: 0, awayW: 0, awayL: 0, last5: []
   }));
-  const priorGames = ALL_GAMES.filter(g => g.week < week && g.state === 'Final')
+  const priorGames = gamesSource.filter(g => g.week < week && g.state === 'Final')
     .sort((a, b) => new Date(a.gameDate) - new Date(b.gameDate));
   priorGames.forEach(g => {
     const home = map.get(g.homeId), away = map.get(g.awayId);
@@ -1675,19 +1686,26 @@ function logParlay(idx, legCount) {
   saveBets(bets);
 }
 
-/* ============================== Backtest (runs against whatever weeks are Final — live once the real season is underway) ============================== */
+/* ============================== Backtest (current live season, or any past season via ESPN's historical scoreboard) ============================== */
 function renderBacktestView() {
   const view = document.getElementById('backtestView');
   if (view.dataset.rendered === 'true') return;
-  const maxPastWeek = Math.max(1, currentWeek - 1);
+  const lastCompletedYear = SEASON_YEAR - 1;
+  const yearOptions = [SEASON_YEAR, ...Array.from({ length: 8 }, (_, i) => SEASON_YEAR - 1 - i)];
   view.innerHTML = `
     <div class="status" style="padding:14px 18px; text-align:left;">
-      Tests the moneyline blend — record, Pythagorean win expectation, home/away splits, recent form,
-      home-field edge, and preseason win-total prior — against completed games from the live ESPN
-      schedule (weeks that haven't finished yet, or that fell back to sample data, aren't included in
-      the "live" count below but still run through the same math). One simplification: early weeks in
-      this backtest use today's Kalshi win-total prior rather than a snapshot from when that week was
-      actually played, since historical prior data isn't available here.
+      Tests the moneyline blend — record, Pythagorean win expectation, home/away splits, recent form, and
+      home-field edge — against real completed games. Pick a past season for a full 18-week test, or the
+      current season to check it against whatever's actually been played so far. The preseason win-total
+      prior only applies to the current live season (it's pulled from today's Kalshi market, which has no
+      meaningful connection to a past season's actual preseason expectations, so it's left out of every
+      past-season test here).
+    </div>
+    <div style="padding: 0 18px 14px;">
+      <label style="display:block; font-size:11px; color:var(--ink-soft); margin-bottom:4px;">Season</label>
+      <select id="btSeason" style="width:100%; padding:8px; border-radius:6px; border:1px solid var(--line); background:var(--chalk); color:var(--ink); font-family:inherit;">
+        ${yearOptions.map(y => `<option value="${y}" ${y === lastCompletedYear ? 'selected' : ''}>${y === SEASON_YEAR ? `Current season (${y}, live)` : `${y} season`}</option>`).join('')}
+      </select>
     </div>
     <div style="padding: 0 18px 14px; display:flex; gap:10px; align-items:flex-end;">
       <div style="flex:1;">
@@ -1702,27 +1720,72 @@ function renderBacktestView() {
     <div style="padding: 0 18px 14px;"><button class="log-bet-btn" id="btRunBtn" style="width:100%;">Run backtest</button></div>
     <div id="btResults"></div>
   `;
-  const startSel = document.getElementById('btStart'), endSel = document.getElementById('btEnd');
-  for (let w = 1; w <= maxPastWeek; w++) {
-    startSel.innerHTML += `<option value="${w}" ${w === 1 ? 'selected' : ''}>Week ${w}</option>`;
-    endSel.innerHTML += `<option value="${w}" ${w === maxPastWeek ? 'selected' : ''}>Week ${w}</option>`;
-  }
   view.dataset.rendered = 'true';
+  document.getElementById('btSeason').addEventListener('change', onBacktestSeasonChange);
   document.getElementById('btRunBtn').addEventListener('click', runBacktest);
+  onBacktestSeasonChange(); // populate week dropdowns for the default (last completed) season
 }
-function runBacktest() {
+async function onBacktestSeasonChange() {
+  const year = parseInt(document.getElementById('btSeason').value);
+  const startSel = document.getElementById('btStart'), endSel = document.getElementById('btEnd');
+  const runBtn = document.getElementById('btRunBtn');
+  const resultsEl = document.getElementById('btResults');
+
+  if (year === SEASON_YEAR) {
+    const maxPastWeek = Math.max(1, currentWeek - 1);
+    startSel.innerHTML = ''; endSel.innerHTML = '';
+    for (let w = 1; w <= maxPastWeek; w++) {
+      startSel.innerHTML += `<option value="${w}" ${w === 1 ? 'selected' : ''}>Week ${w}</option>`;
+      endSel.innerHTML += `<option value="${w}" ${w === maxPastWeek ? 'selected' : ''}>Week ${w}</option>`;
+    }
+    return;
+  }
+
+  runBtn.disabled = true;
+  runBtn.textContent = `Loading ${year} season…`;
+  startSel.innerHTML = ''; endSel.innerHTML = '';
+  try {
+    await loadHistoricalSeason(year);
+    for (let w = 1; w <= 18; w++) {
+      startSel.innerHTML += `<option value="${w}" ${w === 1 ? 'selected' : ''}>Week ${w}</option>`;
+      endSel.innerHTML += `<option value="${w}" ${w === 18 ? 'selected' : ''}>Week ${w}</option>`;
+    }
+  } catch (e) {
+    resultsEl.innerHTML = `<div class="error-box">Couldn't load the ${year} season: ${e.message}</div>`;
+  }
+  runBtn.disabled = false;
+  runBtn.textContent = 'Run backtest';
+}
+async function runBacktest() {
+  const year = parseInt(document.getElementById('btSeason').value);
   const startWeek = parseInt(document.getElementById('btStart').value);
   const endWeek = parseInt(document.getElementById('btEnd').value);
   const resultsEl = document.getElementById('btResults');
   if (startWeek > endWeek) { resultsEl.innerHTML = `<div class="error-box">Start week must be before end week.</div>`; return; }
 
+  const isLiveSeason = year === SEASON_YEAR;
+  let gamesSource;
+  if (isLiveSeason) {
+    gamesSource = ALL_GAMES;
+  } else {
+    const runBtn = document.getElementById('btRunBtn');
+    runBtn.disabled = true; runBtn.textContent = 'Loading…';
+    try { gamesSource = await loadHistoricalSeason(year); }
+    catch (e) { resultsEl.innerHTML = `<div class="error-box">Couldn't load the ${year} season: ${e.message}</div>`; runBtn.disabled = false; runBtn.textContent = 'Run backtest'; return; }
+    runBtn.disabled = false; runBtn.textContent = 'Run backtest';
+  }
+
   const predictions = [];
   let liveCount = 0, total = 0;
   for (let w = startWeek; w <= endWeek; w++) {
-    const standings = computeStandingsThroughWeek(w);
-    (GAMES_BY_WEEK.get(w) || []).filter(g => g.state === 'Final').forEach(g => {
+    const standings = computeStandingsThroughWeek(w, gamesSource);
+    gamesSource.filter(g => g.week === w && g.state === 'Final').forEach(g => {
       const awayStats = standings.get(g.awayId), homeStats = standings.get(g.homeId);
-      const { homeWinProb } = computeBaseWinProb(awayStats, homeStats, g.awayId, g.homeId);
+      // The preseason prior only makes sense for the live season (see note above the season picker) —
+      // omitting team ids here simply skips the prior lookup for past-season tests.
+      const { homeWinProb } = isLiveSeason
+        ? computeBaseWinProb(awayStats, homeStats, g.awayId, g.homeId)
+        : computeBaseWinProb(awayStats, homeStats);
       predictions.push({ predictedHomeProb: homeWinProb, homeWon: g.homeScore > g.awayScore });
       total++; if (g.source === 'espn') liveCount++;
     });
@@ -1757,7 +1820,7 @@ function runBacktest() {
       <div><div class="stat-num">${brierScore.toFixed(3)}</div><div class="stat-label">Brier score</div></div>
       <div><div class="stat-num">${liveCount}/${total}</div><div class="stat-label">Live ESPN games</div></div>
     </div>
-    <div class="parlay-section-title">Calibration — predicted vs. actual</div>
+    <div class="parlay-section-title">Calibration — predicted vs. actual (${year}${isLiveSeason ? ', live' : ''})</div>
     <div class="parlay-card">
       ${rows}
       <div style="font-size:10.5px; color:var(--ink-soft); margin-top:10px; line-height:1.5;">
