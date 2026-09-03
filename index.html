@@ -463,7 +463,7 @@ function computeStandingsThroughWeek(week, gamesSource = ALL_GAMES) {
   const map = new Map();
   TEAMS.forEach(t => map.set(t.id, {
     wins: 0, losses: 0, ties: 0, pointsFor: 0, pointsAgainst: 0,
-    homeW: 0, homeL: 0, awayW: 0, awayL: 0, last5: []
+    homeW: 0, homeL: 0, awayW: 0, awayL: 0, gameLog: []
   }));
   const priorGames = gamesSource.filter(g => g.week < week && g.state === 'Final')
     .sort((a, b) => new Date(a.gameDate) - new Date(b.gameDate));
@@ -473,15 +473,14 @@ function computeStandingsThroughWeek(week, gamesSource = ALL_GAMES) {
     away.pointsFor += g.awayScore; away.pointsAgainst += g.homeScore;
     if (g.homeScore > g.awayScore) {
       home.wins++; home.homeW++; away.losses++; away.awayL++;
-      home.last5.push(1); away.last5.push(0);
+      home.gameLog.push(1); away.gameLog.push(0);
     } else if (g.awayScore > g.homeScore) {
       away.wins++; away.awayW++; home.losses++; home.homeL++;
-      home.last5.push(0); away.last5.push(1);
+      home.gameLog.push(0); away.gameLog.push(1);
     } else {
-      home.ties++; away.ties++; home.last5.push(0.5); away.last5.push(0.5);
+      home.ties++; away.ties++; home.gameLog.push(0.5); away.gameLog.push(0.5);
     }
   });
-  map.forEach(s => { s.last5 = s.last5.slice(-5); });
   const srsRatings = computeSRSRatings(priorGames);
   map.forEach((s, teamId) => { s.srs = srsRatings.get(teamId); });
   return map;
@@ -524,7 +523,22 @@ function splitPct(s, side) {
   const w = side === 'home' ? s.homeW : s.awayW, l = side === 'home' ? s.homeL : s.awayL;
   return (w + l) > 0 ? w / (w + l) : null;
 }
-function last5Pct(s) { return (s && s.last5.length) ? s.last5.reduce((a, b) => a + b, 0) / s.last5.length : null; }
+// Replaces a hard "last 5 games" cutoff with exponential recency weighting across the whole season
+// so far — smooths out the discontinuity where the 6th-most-recent game used to vanish overnight the
+// moment a new game was added. Weight halves every 3 games back, so the most recent handful of games
+// still dominates, but older ones fade out gradually instead of being cut off with a hard edge.
+function recentFormPct(s) {
+  if (!s || !s.gameLog.length) return null;
+  const HALF_LIFE = 3;
+  const decay = Math.pow(0.5, 1 / HALF_LIFE);
+  let weightSum = 0, valueSum = 0, w = 1;
+  for (let i = s.gameLog.length - 1; i >= 0; i--) {
+    valueSum += s.gameLog[i] * w;
+    weightSum += w;
+    w *= decay;
+  }
+  return weightSum > 0 ? valueSum / weightSum : null;
+}
 const PYTH_EXPONENT = 2.37;
 function pythPct(s) {
   if (!s || gamesPlayed(s) === 0) return null;
@@ -539,13 +553,30 @@ function srsPct(s) {
   if (!s || gamesPlayed(s) === 0 || s.srs === undefined || s.srs === null) return null;
   return normalCDF(s.srs / MARGIN_STD_DEV);
 }
-function blendPct(overall, pyth, srs, split, l5, prior, priorW) {
+// Default blend weights — kept mutable (not const) and persisted to localStorage so the weight
+// optimizer below can override them without needing a code change. resetBlendWeights() restores these.
+const DEFAULT_BLEND_WEIGHTS = { overall: 0.15, pyth: 0.15, srs: 0.30, split: 0.20, form: 0.10 };
+function loadBlendWeights() {
+  try {
+    const saved = JSON.parse(localStorage.getItem('gridironBlendWeightsV1'));
+    if (saved && typeof saved === 'object') return { ...DEFAULT_BLEND_WEIGHTS, ...saved };
+  } catch (e) { /* fall through to default */ }
+  return { ...DEFAULT_BLEND_WEIGHTS };
+}
+let BLEND_WEIGHTS = loadBlendWeights();
+function saveBlendWeights(w) {
+  BLEND_WEIGHTS = w;
+  try { localStorage.setItem('gridironBlendWeightsV1', JSON.stringify(w)); } catch (e) { /* ignore */ }
+}
+function resetBlendWeights() {
+  BLEND_WEIGHTS = { ...DEFAULT_BLEND_WEIGHTS };
+  try { localStorage.removeItem('gridironBlendWeightsV1'); } catch (e) { /* ignore */ }
+}
+function blendPct(overall, pyth, srs, split, form, prior, priorW) {
   let weightSum = 0, valueSum = 0;
   const add = (val, w) => { if (val !== null && val !== undefined && !isNaN(val) && w > 0) { valueSum += val * w; weightSum += w; } };
-  // Pythagorean's weight was cut from 0.45 to make room for SRS (opponent-adjusted), rather than
-  // dropped entirely — keeping both gives a bit of diversity/stability instead of fully trusting one
-  // point-differential-based signal over the other.
-  add(overall, 0.15); add(pyth, 0.15); add(srs, 0.30); add(split, 0.20); add(l5, 0.10);
+  add(overall, BLEND_WEIGHTS.overall); add(pyth, BLEND_WEIGHTS.pyth); add(srs, BLEND_WEIGHTS.srs);
+  add(split, BLEND_WEIGHTS.split); add(form, BLEND_WEIGHTS.form);
   add(prior, priorW);
   return weightSum > 0 ? valueSum / weightSum : 0.5;
 }
@@ -560,34 +591,54 @@ function applyShrinkage(prob, factor) { return 0.5 + (prob - 0.5) * factor; }
 // captures part of that (and needs games played to exist at all), so this small constant fills the
 // rest and is the only thing keeping early-season matchups from defaulting to a flat 50/50.
 const HOME_FIELD_EDGE = 0.02;
-// Empirical calibration curve, fit via isotonic regression (pool-adjacent-violators) on a 5-season
-// (2021-2025), 1,360-game backtest of an earlier version of this pipeline (before SRS was added to
-// the blend below — see the note on computeBaseWinProb). That backtest showed the miscalibration
-// wasn't uniform: 50-70% confidence was already accurate, but every bucket above ~65% flattened out
-// to a real-world win rate of roughly 64-66% regardless of how much higher the raw model pushed —
-// i.e. once this model got "confident," extra confidence beyond that point carried almost no real
-// signal. A single flat shrinkage constant can't fix a pattern shaped like that (it scales every
-// prediction the same way), so this replaces the tail behavior with a curve fit directly to the
-// observed data instead of another guessed constant.
+// Team-specific home-field edge: blends a team's own (home win% - away win%) split with the league
+// default above, weighted by how much home/away data we actually have for them — a team with only a
+// handful of games leans almost entirely on the league default; one with a full season or more of
+// splits leans mostly on its own number. This lets things like altitude (Denver) or crowd noise
+// (Seattle, Kansas City) show up as more than the same flat +2% every team gets, without letting a
+// small sample swing wildly on its own.
+function teamHomeFieldEdge(stats) {
+  if (!stats) return HOME_FIELD_EDGE;
+  const homeGP = stats.homeW + stats.homeL, awayGP = stats.awayW + stats.awayL;
+  if (homeGP === 0 || awayGP === 0) return HOME_FIELD_EDGE;
+  const teamEdge = (stats.homeW / homeGP - stats.awayW / awayGP) / 2;
+  const sampleWeight = Math.min(1, (homeGP + awayGP) / 24); // full confidence around ~24 combined games
+  const blended = HOME_FIELD_EDGE * (1 - sampleWeight) + teamEdge * sampleWeight;
+  return Math.min(0.06, Math.max(-0.01, blended));
+}
+// Empirical calibration curve, fit via isotonic regression (pool-adjacent-violators) on real backtest
+// data — kept mutable (not const) and persisted to localStorage so it can be refit from the app
+// itself (Backtest tab) instead of needing a code change every time. resetCalibrationSteps() restores
+// the last fit derived from a 5-season (2021-2025), 1,360-game backtest, later cross-checked against
+// 2021-2024 held out and against a 7-season (2018-2024), 1,824-game combined run.
 // This is a genuine step function, not smoothed/interpolated: isotonic regression pools adjacent
-// buckets into flat-rate bands, and a held-out check (fit including 2025, validated by re-running
-// against 2021-2024 alone) showed that an earlier version of this curve — which linearly interpolated
-// between pool centers instead of using flat steps — reintroduced a real ~7-point overconfidence gap
-// right at the boundary between two pools. Flat steps removed it; a little discontinuity at each
-// boundary is an expected, correct property of isotonic regression, not a bug.
+// buckets into flat-rate bands — a little discontinuity at each boundary is expected and correct,
+// not a bug (an earlier smoothed version of this curve reintroduced a real ~7-point overconfidence
+// gap at a pool boundary; flat steps removed it).
 // Each step is [maxDistanceFromHalf, correctedDistanceFromHalf]; steps mirror symmetrically for the
-// away-favored side. Caveat worth remembering: this is an in-sample fit on the seasons used to derive
-// it, so re-running that exact backtest will look better almost by construction — the real test is
-// how it holds up on new games as the 2026 season actually plays out, or a fresh held-out split.
-// IMPORTANT: adding SRS to the blend changed the raw model's output distribution, so this curve — fit
-// on the pre-SRS pipeline — is only an approximation now, not a fresh fit. Re-run the backtest (any
-// season range) to see whether it still holds; if the calibration table drifts, it should be refit.
-const CALIBRATION_STEPS = [
+// away-favored side.
+const DEFAULT_CALIBRATION_STEPS = [
   [0.10, 0.0432],  // raw 50-60% -> corrected to a real ~54.3-55% area
   [0.15, 0.118],   // raw 60-65% -> corrected to a real ~61.8% area
-  [0.30, 0.1375],  // raw 65-80% -> corrected to a real ~63.75% area (this pool fixed the boundary issue)
+  [0.30, 0.1375],  // raw 65-80% -> corrected to a real ~63.75% area
   [0.50, 0.1616]   // raw 80-100% -> corrected to a real ~66.2% area (the model's effective ceiling)
 ];
+function loadCalibrationSteps() {
+  try {
+    const saved = JSON.parse(localStorage.getItem('gridironCalibrationStepsV1'));
+    if (Array.isArray(saved) && saved.length) return saved;
+  } catch (e) { /* fall through to default */ }
+  return DEFAULT_CALIBRATION_STEPS.map(s => s.slice());
+}
+let CALIBRATION_STEPS = loadCalibrationSteps();
+function saveCalibrationSteps(steps) {
+  CALIBRATION_STEPS = steps;
+  try { localStorage.setItem('gridironCalibrationStepsV1', JSON.stringify(steps)); } catch (e) { /* ignore */ }
+}
+function resetCalibrationSteps() {
+  CALIBRATION_STEPS = DEFAULT_CALIBRATION_STEPS.map(s => s.slice());
+  try { localStorage.removeItem('gridironCalibrationStepsV1'); } catch (e) { /* ignore */ }
+}
 function applyCalibrationCurve(prob) {
   const sign = prob >= 0.5 ? 1 : -1;
   const dist = Math.min(0.5, Math.abs(prob - 0.5));
@@ -597,18 +648,21 @@ function applyCalibrationCurve(prob) {
   }
   return 0.5 + sign * corrected;
 }
-// SRS (opponent-adjusted) now sits alongside raw Pythagorean in the blend — see blendPct above and
-// computeSRSRatings near computeStandingsThroughWeek for how it's computed.
-function computeBaseWinProb(awayStats, homeStats, awayTeamId, homeTeamId) {
+// SRS (opponent-adjusted) sits alongside raw Pythagorean in the blend — see blendPct above and
+// computeSRSRatings near computeStandingsThroughWeek for how it's computed. skipCalibration returns
+// the pre-curve raw probability too, used by the backtest/recalibration and weight-optimizer tools
+// so they can fit against the model's actual raw output rather than an already-corrected number.
+function computeBaseWinProb(awayStats, homeStats, awayTeamId, homeTeamId, skipCalibration) {
   const awayGP = gamesPlayed(awayStats), homeGP = gamesPlayed(homeStats);
   const awayPrior = awayTeamId != null ? TEAM_PRIOR_WINPCT.get(awayTeamId) : undefined;
   const homePrior = homeTeamId != null ? TEAM_PRIOR_WINPCT.get(homeTeamId) : undefined;
-  const awayPct = blendPct(pctFromRecord(awayStats), pythPct(awayStats), srsPct(awayStats), splitPct(awayStats, 'away'), last5Pct(awayStats), awayPrior, priorWeight(awayGP));
-  const homePct = blendPct(pctFromRecord(homeStats), pythPct(homeStats), srsPct(homeStats), splitPct(homeStats, 'home'), last5Pct(homeStats), homePrior, priorWeight(homeGP));
+  const awayPct = blendPct(pctFromRecord(awayStats), pythPct(awayStats), srsPct(awayStats), splitPct(awayStats, 'away'), recentFormPct(awayStats), awayPrior, priorWeight(awayGP));
+  const homePct = blendPct(pctFromRecord(homeStats), pythPct(homeStats), srsPct(homeStats), splitPct(homeStats, 'home'), recentFormPct(homeStats), homePrior, priorWeight(homeGP));
   let homeWinProb = applyShrinkage(log5(homePct, awayPct), MONEYLINE_SHRINKAGE);
-  homeWinProb = Math.min(0.97, Math.max(0.03, homeWinProb + HOME_FIELD_EDGE));
-  homeWinProb = applyCalibrationCurve(homeWinProb);
-  return { homeWinProb, awayWinProb: 1 - homeWinProb };
+  homeWinProb = Math.min(0.97, Math.max(0.03, homeWinProb + teamHomeFieldEdge(homeStats)));
+  const rawHomeWinProb = homeWinProb;
+  if (!skipCalibration) homeWinProb = applyCalibrationCurve(homeWinProb);
+  return { homeWinProb, awayWinProb: 1 - homeWinProb, rawHomeWinProb };
 }
 
 // Rest & travel — pure math off the schedule we already have, no fetch required, so this can be
@@ -760,6 +814,38 @@ function injuryChipsHTML(entries) {
     const cls = /out|ir|reserve/i.test(e.status) ? 'chip-neg' : 'chip-out';
     return `<span class="chip ${cls}">${label} ${e.status}</span>`;
   }).join('');
+}
+// Rough relative importance of a non-QB position going down — clearly secondary to a QB (handled
+// separately via qbStatusSeverity/applyQBAdjustment), but real: an O-line or CB1 injury does move a
+// game. Status strings from ESPN show up as either full words or abbreviations depending on source,
+// so this matches both.
+function injurySeverity(status) {
+  if (!status) return 0;
+  const s = status.toUpperCase();
+  if (/^(IR|OUT|O|SUSPENDED|PUP|NFI)$/.test(s) || /RESERVE/.test(s)) return 1;
+  if (/^(D|DOUBTFUL)$/.test(s)) return 0.7;
+  if (/^(Q|QUESTIONABLE|DAY-TO-DAY|DTD)$/.test(s)) return 0.4;
+  return 0;
+}
+const INJURY_POSITION_WEIGHT = {
+  T: 0.015, OT: 0.015, G: 0.008, OG: 0.008, C: 0.010,
+  WR: 0.010, TE: 0.006, RB: 0.008, FB: 0.003,
+  CB: 0.012, S: 0.008, DB: 0.010,
+  DE: 0.007, DT: 0.006, NT: 0.005, LB: 0.006, EDGE: 0.007,
+  K: 0.003, P: 0.002, LS: 0.001
+};
+const DEFAULT_INJURY_WEIGHT = 0.004;
+// Sums a small, position-weighted win-probability nudge across a team's reported injuries, capped so
+// a long list can't swing a game more than a handful of points on its own — this is meant to be a
+// secondary signal layered on top of the QB adjustment, not a replacement for it.
+function injuryImpact(entries) {
+  if (!entries || !entries.length) return 0;
+  let impact = 0;
+  entries.forEach(e => {
+    const w = INJURY_POSITION_WEIGHT[(e.pos || '').toUpperCase()] ?? DEFAULT_INJURY_WEIGHT;
+    impact += w * injurySeverity(e.status);
+  });
+  return Math.min(0.05, impact);
 }
 
 /* ============================== LIVE: weather via Open-Meteo ============================== */
@@ -1266,15 +1352,19 @@ function loadGames() {
     row.addEventListener('click', () => selectGame(g.gamePk, row));
     currentRowPair.appendChild(row);
 
-    // QB status needs a live fetch, so it's applied as a background patch once it resolves —
-    // only repaints if a QB is actually confirmed out, to avoid flicker on the common case.
-    Promise.all([fetchLiveQB(g.awayId), fetchLiveQB(g.homeId)]).then(([awayQB, homeQB]) => {
-      const awaySeverity = awayQB ? awayQB.severity : 'Healthy';
-      const homeSeverity = homeQB ? homeQB.severity : 'Healthy';
-      if (awaySeverity !== 'Out' && homeSeverity !== 'Out') return;
-      const finalHomeWinProb = applyQBAdjustment(restAdjustedHomeWinProb, awaySeverity, homeSeverity);
-      patchMiniProb(barId, numsId, 1 - finalHomeWinProb, finalHomeWinProb, away.abbr, home.abbr);
-    });
+    // QB status and non-QB injuries need live fetches, so they're applied as a background patch once
+    // they resolve — only repaints if something actually changes the number, to avoid flicker on the
+    // common case where everyone's healthy.
+    Promise.all([fetchLiveQB(g.awayId), fetchLiveQB(g.homeId), fetchLiveInjuries(g.awayId), fetchLiveInjuries(g.homeId)])
+      .then(([awayQB, homeQB, awayInj, homeInj]) => {
+        const awaySeverity = awayQB ? awayQB.severity : 'Healthy';
+        const homeSeverity = homeQB ? homeQB.severity : 'Healthy';
+        const injuryDelta = injuryImpact(awayInj) - injuryImpact(homeInj);
+        if (awaySeverity !== 'Out' && homeSeverity !== 'Out' && Math.abs(injuryDelta) < 1e-9) return;
+        let finalHomeWinProb = applyQBAdjustment(restAdjustedHomeWinProb, awaySeverity, homeSeverity);
+        finalHomeWinProb = Math.min(0.97, Math.max(0.03, finalHomeWinProb + injuryDelta));
+        patchMiniProb(barId, numsId, 1 - finalHomeWinProb, finalHomeWinProb, away.abbr, home.abbr);
+      });
   });
 }
 
@@ -1310,11 +1400,14 @@ async function renderMatchup(gamePk) {
 
   const { homeWinProb: baseHomeWinProb } = computeBaseWinProb(awayStats, homeStats, g.awayId, g.homeId);
 
-  const [awayQBLive, homeQBLive] = await Promise.all([fetchLiveQB(g.awayId), fetchLiveQB(g.homeId)]);
+  const [awayQBLive, homeQBLive, awayInjuriesLive, homeInjuriesLive] = await Promise.all([
+    fetchLiveQB(g.awayId), fetchLiveQB(g.homeId), fetchLiveInjuries(g.awayId), fetchLiveInjuries(g.homeId)
+  ]);
   const awayQBSample = getQBSample(g.awayId), homeQBSample = getQBSample(g.homeId);
   const awaySeverity = awayQBLive ? awayQBLive.severity : getQBStatusSample(g.awayId, g.week);
   const homeSeverity = homeQBLive ? homeQBLive.severity : getQBStatusSample(g.homeId, g.week);
   let homeWinProb = applyQBAdjustment(baseHomeWinProb, awaySeverity, homeSeverity);
+  homeWinProb = Math.min(0.97, Math.max(0.03, homeWinProb + injuryImpact(awayInjuriesLive) - injuryImpact(homeInjuriesLive)));
 
   const { homeWinProb: restAdjustedHomeWinProb, awayTravel, homeTravel } = applyRestTravelAdjustment(homeWinProb, g);
   homeWinProb = restAdjustedHomeWinProb;
@@ -1437,12 +1530,11 @@ async function renderMatchup(gamePk) {
           </div>
 
           <div class="detail-block">
-            <div class="detail-title">Injury report</div>
+            <div class="detail-title">Injury report${(awayInjuriesLive || homeInjuriesLive) ? ' (live)' : ' (sample)'}</div>
             <div class="detail-cols">
-              <div class="chip-row" id="injury-${g.gamePk}-a">${injuryChipsHTML(getInjuryReportSample(g.awayId, g.week))}</div>
-              <div class="chip-row" id="injury-${g.gamePk}-h">${injuryChipsHTML(getInjuryReportSample(g.homeId, g.week))}</div>
+              <div class="chip-row">${injuryChipsHTML(awayInjuriesLive && awayInjuriesLive.length ? awayInjuriesLive : getInjuryReportSample(g.awayId, g.week))}</div>
+              <div class="chip-row">${injuryChipsHTML(homeInjuriesLive && homeInjuriesLive.length ? homeInjuriesLive : getInjuryReportSample(g.homeId, g.week))}</div>
             </div>
-            <div style="font-size:10px; color:var(--ink-soft); margin-top:6px;">Expand this panel to pull the live report — falls back to a sample estimate if ESPN's feed doesn't respond.</div>
           </div>
         </div>
       </details>
@@ -1450,22 +1542,6 @@ async function renderMatchup(gamePk) {
   `;
 
   currentMatchup = { gamePk, awayAbbr: away.abbr, homeAbbr: home.abbr, awayName: `${away.city} ${away.name}`, homeName: `${home.city} ${home.name}`, gameDate: g.gameDate };
-
-  // Live injury report loads only once this panel is actually opened, to keep initial render fast.
-  const detailsEl = el.querySelector('.game-details');
-  let injuriesRequested = false;
-  detailsEl.addEventListener('toggle', () => {
-    if (!detailsEl.open || injuriesRequested) return;
-    injuriesRequested = true;
-    const awayBox = document.getElementById(`injury-${g.gamePk}-a`);
-    const homeBox = document.getElementById(`injury-${g.gamePk}-h`);
-    if (awayBox) awayBox.innerHTML = '<span style="color:var(--ink-soft);">Loading live injury report…</span>';
-    if (homeBox) homeBox.innerHTML = '<span style="color:var(--ink-soft);">Loading live injury report…</span>';
-    Promise.all([fetchLiveInjuries(g.awayId), fetchLiveInjuries(g.homeId)]).then(([awayLive, homeLive]) => {
-      if (awayBox) awayBox.innerHTML = injuryChipsHTML(awayLive && awayLive.length ? awayLive : getInjuryReportSample(g.awayId, g.week));
-      if (homeBox) homeBox.innerHTML = injuryChipsHTML(homeLive && homeLive.length ? homeLive : getInjuryReportSample(g.homeId, g.week));
-    });
-  });
 
   el.querySelectorAll('.bet-tab').forEach(tab => {
     tab.addEventListener('click', () => {
@@ -1821,6 +1897,79 @@ function logParlay(idx, legCount) {
 }
 
 /* ============================== Backtest (current live season, and/or any combination of past seasons) ============================== */
+/* ============================== Shared model-tuning helpers (used by backtest, weight optimizer, recalibration) ============================== */
+// Builds the per-game data (standings as of that week, for whichever seasons are selected) once, so
+// the backtest, weight optimizer, and recalibration tool can all reuse the same expensive standings
+// computation instead of redoing it — the weight search in particular tries thousands of combinations
+// and would be far too slow if it recomputed standings on every trial instead of just the cheap blend.
+async function gatherGameEntries(checked, startWeek, endWeek) {
+  const toLoad = checked.filter(y => y !== SEASON_YEAR && !historicalSeasonsCache.has(y));
+  if (toLoad.length) await Promise.all(toLoad.map(y => loadHistoricalSeason(y)));
+  const entries = [];
+  checked.forEach(year => {
+    const isLiveSeason = year === SEASON_YEAR;
+    const gamesSource = isLiveSeason ? ALL_GAMES : (historicalSeasonsCache.get(year) || []);
+    for (let w = startWeek; w <= endWeek; w++) {
+      const standings = computeStandingsThroughWeek(w, gamesSource);
+      gamesSource.filter(g => g.week === w && g.state === 'Final').forEach(g => {
+        entries.push({
+          awayStats: standings.get(g.awayId), homeStats: standings.get(g.homeId),
+          awayTeamId: g.awayId, homeTeamId: g.homeId, isLiveSeason,
+          homeWon: g.homeScore > g.awayScore, source: g.source, year
+        });
+      });
+    }
+  });
+  return entries;
+}
+function rawProbFor(e) {
+  return (e.isLiveSeason
+    ? computeBaseWinProb(e.awayStats, e.homeStats, e.awayTeamId, e.homeTeamId, true)
+    : computeBaseWinProb(e.awayStats, e.homeStats, undefined, undefined, true)).rawHomeWinProb;
+}
+function calibratedProbFor(e) {
+  return e.isLiveSeason
+    ? computeBaseWinProb(e.awayStats, e.homeStats, e.awayTeamId, e.homeTeamId).homeWinProb
+    : computeBaseWinProb(e.awayStats, e.homeStats).homeWinProb;
+}
+// Isotonic regression via pool-adjacent-violators (PAVA): given (x, y) points, finds the best-fitting
+// monotonic non-decreasing step function. Used to refit the calibration curve directly from whatever
+// backtest data is currently selected, instead of a one-off manual fit.
+function isotonicRegression(points) {
+  const sorted = points.slice().sort((a, b) => a.x - b.x);
+  let pools = sorted.map(p => ({ sumY: p.y, n: 1, xMax: p.x }));
+  let merged = true;
+  while (merged) {
+    merged = false;
+    for (let i = 0; i < pools.length - 1; i++) {
+      if (pools[i].sumY / pools[i].n > pools[i + 1].sumY / pools[i + 1].n + 1e-12) {
+        pools[i] = { sumY: pools[i].sumY + pools[i + 1].sumY, n: pools[i].n + pools[i + 1].n, xMax: pools[i + 1].xMax };
+        pools.splice(i + 1, 1);
+        merged = true;
+        break;
+      }
+    }
+  }
+  // Pools that end up sharing (near-)identical xMax would leave the step function ambiguous —
+  // merge them so every boundary is well-defined.
+  const out = [];
+  pools.forEach(p => {
+    const last = out[out.length - 1];
+    if (last && Math.abs(last.xMax - p.xMax) < 1e-9) {
+      const totalN = last.n + p.n;
+      last.y = (last.y * last.n + p.y * p.n) / totalN;
+      last.n = totalN;
+    } else out.push({ y: p.sumY / p.n, n: p.n, xMax: p.xMax });
+  });
+  return out;
+}
+function currentModelSettingsHTML() {
+  const w = BLEND_WEIGHTS;
+  const isDefaultWeights = JSON.stringify(w) === JSON.stringify(DEFAULT_BLEND_WEIGHTS);
+  const isDefaultCal = JSON.stringify(CALIBRATION_STEPS) === JSON.stringify(DEFAULT_CALIBRATION_STEPS);
+  return `Active weights: ${isDefaultWeights ? 'default' : `custom (record ${w.overall.toFixed(2)}, pyth ${w.pyth.toFixed(2)}, SRS ${w.srs.toFixed(2)}, split ${w.split.toFixed(2)}, form ${w.form.toFixed(2)})`} · Calibration: ${isDefaultCal ? 'default' : `custom (${CALIBRATION_STEPS.length} steps)`}`;
+}
+
 function renderBacktestView() {
   const view = document.getElementById('backtestView');
   if (view.dataset.rendered === 'true') return;
@@ -1828,15 +1977,15 @@ function renderBacktestView() {
   const yearOptions = [SEASON_YEAR, ...Array.from({ length: 8 }, (_, i) => SEASON_YEAR - 1 - i)];
   view.innerHTML = `
     <div class="status" style="padding:14px 18px; text-align:left;">
-      Tests the moneyline blend — record, Pythagorean win expectation, home/away splits, recent form, and
-      home-field edge — against real completed games. Check as many seasons as you want; each one is
-      scored on its own (a team's Week 5 standing only ever reflects that season's own games), then every
-      selected season's predictions are pooled into one combined calibration read, with a per-season Brier
-      breakdown underneath so you can see whether any miscalibration is consistent year to year or was
-      just noise in a single season. The preseason win-total prior only applies to the current live season
-      (it's pulled from today's Kalshi market, which has no connection to a past season's actual preseason
-      expectations) — every past season here runs on in-season signals only.
+      Tests the moneyline blend — record, Pythagorean win expectation, opponent-adjusted SRS, home/away
+      splits, and recency-weighted recent form — against real completed games. Check as many seasons as
+      you want; each one is scored on its own (a team's Week 5 standing only ever reflects that season's
+      own games), then every selected season's predictions are pooled into one combined calibration read,
+      with a per-season Brier breakdown underneath so you can see whether any miscalibration is consistent
+      year to year or was just noise in a single season. The preseason win-total prior only applies to the
+      current live season — every past season here runs on in-season signals only.
     </div>
+    <div style="padding: 0 18px 4px; font-size:10.5px; color:var(--accent);" id="btCurrentSettings">${currentModelSettingsHTML()}</div>
     <div style="padding: 0 18px 14px;">
       <label style="display:block; font-size:11px; color:var(--ink-soft); margin-bottom:6px;">Seasons (pick one or more)</label>
       <div id="btSeasonChecks" class="chip-row">
@@ -1864,56 +2013,158 @@ function renderBacktestView() {
     </div>
     <div style="padding: 0 18px 14px;"><button class="log-bet-btn" id="btRunBtn" style="width:100%;">Run backtest</button></div>
     <div id="btResults"></div>
+
+    <div class="parlay-section-title">Model tools</div>
+    <div class="status" style="padding:0 18px 14px; text-align:left;">
+      Use the same season/week selection above. <b>Optimize weights</b> grid-searches the blend weights
+      (record, Pythagorean, SRS, home/away split, recent form) in steps of 0.1 to minimize raw
+      (pre-calibration) Brier score — a real search over ~7,800 combinations, not a guess, but coarse-
+      grained. <b>Recalibrate</b> refits the calibration curve from scratch via isotonic regression on
+      the model's current raw output. Both show results before doing anything — nothing changes until
+      you tap Apply, and Reset always restores the built-in defaults.
+    </div>
+    <div style="padding: 0 18px 10px; display:flex; gap:10px;">
+      <button class="log-bet-btn" id="btOptimizeBtn" style="width:50%;">Optimize weights</button>
+      <button class="log-bet-btn" id="btRecalBtn" style="width:50%;">Recalibrate</button>
+    </div>
+    <div id="btToolsResults"></div>
   `;
   view.dataset.rendered = 'true';
   document.getElementById('btRunBtn').addEventListener('click', runBacktest);
+  document.getElementById('btOptimizeBtn').addEventListener('click', runWeightOptimization);
+  document.getElementById('btRecalBtn').addEventListener('click', runRecalibration);
 }
-async function runBacktest() {
-  const checked = Array.from(document.querySelectorAll('#btSeasonChecks input:checked')).map(el => parseInt(el.value));
+function refreshModelSettingsDisplay() {
+  const el = document.getElementById('btCurrentSettings');
+  if (el) el.textContent = currentModelSettingsHTML();
+}
+function getCheckedSeasonsAndWeeks() {
+  const checked = Array.from(document.querySelectorAll('#btSeasonChecks input:checked')).map(el => parseInt(el.value)).sort((a, b) => a - b);
   const startWeek = parseInt(document.getElementById('btStart').value);
   const endWeek = parseInt(document.getElementById('btEnd').value);
+  return { checked, startWeek, endWeek };
+}
+async function runWeightOptimization() {
+  const { checked, startWeek, endWeek } = getCheckedSeasonsAndWeeks();
+  const resultsEl = document.getElementById('btToolsResults');
+  const btn = document.getElementById('btOptimizeBtn');
+  if (!checked.length) { resultsEl.innerHTML = `<div class="error-box">Pick at least one season above first.</div>`; return; }
+  if (startWeek > endWeek) { resultsEl.innerHTML = `<div class="error-box">Start week must be before end week.</div>`; return; }
+  btn.disabled = true; btn.textContent = 'Loading data…';
+  const entries = await gatherGameEntries(checked, startWeek, endWeek);
+  if (!entries.length) { resultsEl.innerHTML = `<div class="error-box">No completed games in that range.</div>`; btn.disabled = false; btn.textContent = 'Optimize weights'; return; }
+  btn.textContent = 'Searching weight combinations…';
+  await new Promise(r => setTimeout(r, 20)); // let the button label actually paint before the blocking loop
+  const originalWeights = { ...BLEND_WEIGHTS };
+  const currentBrier = entries.reduce((s, e) => s + Math.pow(rawProbFor(e) - (e.homeWon ? 1 : 0), 2), 0) / entries.length;
+  const levels = [0, 0.1, 0.2, 0.3, 0.4, 0.5];
+  let best = null, bestBrier = Infinity;
+  for (const overall of levels) for (const pyth of levels) for (const srs of levels) for (const split of levels) for (const form of levels) {
+    if (overall + pyth + srs + split + form === 0) continue;
+    BLEND_WEIGHTS = { overall, pyth, srs, split, form };
+    let brierSum = 0;
+    for (const e of entries) brierSum += Math.pow(rawProbFor(e) - (e.homeWon ? 1 : 0), 2);
+    const brier = brierSum / entries.length;
+    if (brier < bestBrier) { bestBrier = brier; best = { overall, pyth, srs, split, form }; }
+  }
+  BLEND_WEIGHTS = originalWeights; // restore — nothing applied until the user taps Apply
+  btn.disabled = false; btn.textContent = 'Optimize weights';
+  window._optimizedWeights = best;
+  resultsEl.innerHTML = `
+    <div class="parlay-card">
+      <div style="font-size:13px; margin-bottom:8px;">Best weights found over ${entries.length} games — raw Brier ${bestBrier.toFixed(4)} vs. ${currentBrier.toFixed(4)} currently:</div>
+      <div class="chip-row" style="margin-bottom:10px;">
+        <span class="chip">Record ${best.overall.toFixed(2)}</span>
+        <span class="chip">Pythagorean ${best.pyth.toFixed(2)}</span>
+        <span class="chip">SRS ${best.srs.toFixed(2)}</span>
+        <span class="chip">Home/away split ${best.split.toFixed(2)}</span>
+        <span class="chip">Recent form ${best.form.toFixed(2)}</span>
+      </div>
+      <div style="font-size:10.5px; color:var(--ink-soft); margin-bottom:10px;">Applying new weights changes the model's raw output distribution — recalibrate afterward so the calibration curve matches.</div>
+      <button class="log-bet-btn" onclick="applyOptimizedWeights()">Apply these weights</button>
+      <button class="log-bet-btn" onclick="resetBlendWeights(); refreshModelSettingsDisplay(); document.getElementById('btToolsResults').innerHTML='&lt;div class=&quot;status&quot;&gt;Reset to default weights.&lt;/div&gt;';" style="margin-top:6px;">Reset to default weights</button>
+    </div>
+  `;
+}
+function applyOptimizedWeights() {
+  if (!window._optimizedWeights) return;
+  saveBlendWeights(window._optimizedWeights);
+  refreshModelSettingsDisplay();
+  document.getElementById('btToolsResults').innerHTML = '<div class="status">Applied — new weights are active and saved. Consider recalibrating next.</div>';
+}
+async function runRecalibration() {
+  const { checked, startWeek, endWeek } = getCheckedSeasonsAndWeeks();
+  const resultsEl = document.getElementById('btToolsResults');
+  const btn = document.getElementById('btRecalBtn');
+  if (!checked.length) { resultsEl.innerHTML = `<div class="error-box">Pick at least one season above first.</div>`; return; }
+  if (startWeek > endWeek) { resultsEl.innerHTML = `<div class="error-box">Start week must be before end week.</div>`; return; }
+  btn.disabled = true; btn.textContent = 'Loading data…';
+  const entries = await gatherGameEntries(checked, startWeek, endWeek);
+  if (!entries.length) { resultsEl.innerHTML = `<div class="error-box">No completed games in that range.</div>`; btn.disabled = false; btn.textContent = 'Recalibrate'; return; }
+  btn.textContent = 'Fitting calibration curve…';
+  await new Promise(r => setTimeout(r, 20));
+  const points = entries.map(e => {
+    const raw = rawProbFor(e);
+    const favoredIsHome = raw >= 0.5;
+    const favoredWon = favoredIsHome ? e.homeWon : !e.homeWon;
+    return { x: Math.abs(raw - 0.5), y: favoredWon ? 1 : 0 };
+  });
+  const pools = isotonicRegression(points);
+  const newSteps = pools.map(p => [Math.min(0.5, p.xMax), p.y]);
+  if (newSteps.length) newSteps[newSteps.length - 1][0] = 0.5; // extend the last step to cover the full range
+  btn.disabled = false; btn.textContent = 'Recalibrate';
+  window._newCalibrationSteps = newSteps;
+  const rows = pools.map(p => `<div class="parlay-leg" style="padding:6px 0; border-bottom:1px solid var(--line);">
+      <span>raw up to ${(50 + Math.min(0.5, p.xMax) * 100).toFixed(0)}% (n=${p.n})</span><span class="leg-prob">${(p.y * 100).toFixed(1)}% actual</span>
+    </div>`).join('');
+  resultsEl.innerHTML = `
+    <div class="parlay-card">
+      <div style="font-size:13px; margin-bottom:8px;">New calibration curve fit from ${entries.length} games (${pools.length} pools):</div>
+      ${rows}
+      <div style="font-size:10.5px; color:var(--ink-soft); margin:10px 0;">In-sample fit on the seasons selected above — same caveat as always: check it against held-out data before fully trusting it.</div>
+      <button class="log-bet-btn" onclick="applyNewCalibration()">Apply this calibration curve</button>
+      <button class="log-bet-btn" onclick="resetCalibrationSteps(); refreshModelSettingsDisplay(); document.getElementById('btToolsResults').innerHTML='&lt;div class=&quot;status&quot;&gt;Reset to default calibration.&lt;/div&gt;';" style="margin-top:6px;">Reset to default calibration</button>
+    </div>
+  `;
+}
+function applyNewCalibration() {
+  if (!window._newCalibrationSteps) return;
+  saveCalibrationSteps(window._newCalibrationSteps);
+  refreshModelSettingsDisplay();
+  document.getElementById('btToolsResults').innerHTML = '<div class="status">Applied — new calibration curve is active and saved.</div>';
+}
+async function runBacktest() {
+  const { checked, startWeek, endWeek } = getCheckedSeasonsAndWeeks();
   const resultsEl = document.getElementById('btResults');
   const runBtn = document.getElementById('btRunBtn');
   if (!checked.length) { resultsEl.innerHTML = `<div class="error-box">Pick at least one season.</div>`; return; }
   if (startWeek > endWeek) { resultsEl.innerHTML = `<div class="error-box">Start week must be before end week.</div>`; return; }
 
-  const toLoad = checked.filter(y => y !== SEASON_YEAR && !historicalSeasonsCache.has(y));
-  if (toLoad.length) {
-    runBtn.disabled = true;
-    runBtn.textContent = `Loading ${toLoad.join(', ')}…`;
-    try { await Promise.all(toLoad.map(y => loadHistoricalSeason(y))); }
-    catch (e) { resultsEl.innerHTML = `<div class="error-box">Couldn't load one of those seasons: ${e.message}</div>`; runBtn.disabled = false; runBtn.textContent = 'Run backtest'; return; }
-    runBtn.disabled = false;
-    runBtn.textContent = 'Run backtest';
-  }
+  runBtn.disabled = true;
+  runBtn.textContent = 'Loading…';
+  let entries;
+  try { entries = await gatherGameEntries(checked, startWeek, endWeek); }
+  catch (e) { resultsEl.innerHTML = `<div class="error-box">Couldn't load one of those seasons: ${e.message}</div>`; runBtn.disabled = false; runBtn.textContent = 'Run backtest'; return; }
+  runBtn.disabled = false;
+  runBtn.textContent = 'Run backtest';
+  if (!entries.length) { resultsEl.innerHTML = `<div class="error-box">No completed games in that range for the selected season(s).</div>`; return; }
 
   const predictions = [];
-  const perSeason = [];
-  let liveCount = 0, total = 0;
-  checked.sort((a, b) => a - b).forEach(year => {
-    const isLiveSeason = year === SEASON_YEAR;
-    const gamesSource = isLiveSeason ? ALL_GAMES : historicalSeasonsCache.get(year) || [];
-    const seasonPredictions = [];
-    for (let w = startWeek; w <= endWeek; w++) {
-      const standings = computeStandingsThroughWeek(w, gamesSource);
-      gamesSource.filter(g => g.week === w && g.state === 'Final').forEach(g => {
-        const awayStats = standings.get(g.awayId), homeStats = standings.get(g.homeId);
-        // The preseason prior only makes sense for the live season (see note above the season picker) —
-        // omitting team ids here simply skips the prior lookup for past-season tests.
-        const { homeWinProb } = isLiveSeason
-          ? computeBaseWinProb(awayStats, homeStats, g.awayId, g.homeId)
-          : computeBaseWinProb(awayStats, homeStats);
-        const pred = { predictedHomeProb: homeWinProb, homeWon: g.homeScore > g.awayScore };
-        predictions.push(pred); seasonPredictions.push(pred);
-        total++; if (g.source === 'espn') liveCount++;
-      });
-    }
-    if (seasonPredictions.length) {
-      const seasonBrier = seasonPredictions.reduce((s, p) => s + Math.pow(p.predictedHomeProb - (p.homeWon ? 1 : 0), 2), 0) / seasonPredictions.length;
-      perSeason.push({ year, isLiveSeason, n: seasonPredictions.length, brier: seasonBrier });
-    }
+  const perSeasonMap = new Map();
+  let liveCount = 0;
+  entries.forEach(e => {
+    const predictedHomeProb = calibratedProbFor(e);
+    const pred = { predictedHomeProb, homeWon: e.homeWon };
+    predictions.push(pred);
+    if (!perSeasonMap.has(e.year)) perSeasonMap.set(e.year, { isLiveSeason: e.isLiveSeason, preds: [] });
+    perSeasonMap.get(e.year).preds.push(pred);
+    if (e.source === 'espn') liveCount++;
   });
-  if (!predictions.length) { resultsEl.innerHTML = `<div class="error-box">No completed games in that range for the selected season(s).</div>`; return; }
+  const perSeason = Array.from(perSeasonMap.entries()).map(([year, v]) => ({
+    year, isLiveSeason: v.isLiveSeason, n: v.preds.length,
+    brier: v.preds.reduce((s, p) => s + Math.pow(p.predictedHomeProb - (p.homeWon ? 1 : 0), 2), 0) / v.preds.length
+  })).sort((a, b) => a.year - b.year);
+  const total = entries.length;
 
   const buckets = {};
   let brierSum = 0;
