@@ -1,0 +1,1349 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gridiron — NFL Probability Tool</title>
+<style>
+  :root {
+    --field: #1E5631;
+    --field-dark: #0F3319;
+    --field-light: #2F7A44;
+    --chalk: #0A2347;
+    --dirt: #8B4513;
+    --dirt-light: #A85A2A;
+    --amber: #F0A83E;
+    --amber-soft: rgba(240,168,62,0.18);
+    --ink: #F2F4F8;
+    --ink-soft: #A9BBD1;
+    --line: rgba(255,255,255,0.14);
+    --card: #123863;
+    --neg: #E15C4C;
+    --neg-soft: rgba(225,92,76,0.18);
+    --pos-soft: rgba(0,196,160,0.18);
+    --accent: #2DD4C4;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--chalk);
+    color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    padding-bottom: 40px;
+    -webkit-font-smoothing: antialiased;
+  }
+  .mono { font-family: 'SF Mono', ui-monospace, 'Courier New', monospace; font-variant-numeric: tabular-nums; }
+  header {
+    background: var(--field);
+    color: var(--ink);
+    padding: 22px 18px 20px;
+    border-bottom: 6px solid var(--dirt);
+  }
+  header h1 {
+    margin: 0;
+    font-family: 'Arial Narrow', 'Helvetica Neue', sans-serif;
+    font-weight: 800;
+    font-size: 28px;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+  }
+  header p { margin: 6px 0 0; font-size: 13px; color: var(--ink-soft); max-width: 46ch; line-height: 1.5; }
+  header .demo-flag { display:inline-block; margin-top:8px; font-size:10.5px; letter-spacing:0.5px; background:rgba(0,0,0,0.22); border:1px solid rgba(255,255,255,0.25); border-radius:20px; padding:3px 10px; color:var(--ink); }
+  .datebar { display: flex; align-items: center; gap: 10px; padding: 14px 18px; background: var(--field-dark); }
+  .datebar button { background: none; border: 1px solid rgba(255,255,255,0.15); color: var(--ink); font-family: inherit; font-size: 18px; width: 34px; height: 34px; border-radius: 4px; cursor: pointer; }
+  #dateLabel { display: flex; flex-direction: column; align-items: center; gap: 2px; min-width: 140px; }
+  .date-day { font-size: 11px; font-weight: 700; letter-spacing: 0.6px; color: var(--ink-soft); }
+  .date-day.is-today { color: var(--accent); }
+  .date-num { font-size: 15px; font-weight: 800; color: var(--ink); }
+  .date-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); margin-top: 1px; }
+  main { padding: 16px; max-width: 640px; margin: 0 auto; }
+  .status { text-align: center; color: var(--ink-soft); padding: 30px 10px; font-size: 14px; }
+  .games { display: flex; flex-direction: column; gap: 10px; margin-bottom: 22px; }
+  .game-row-pair { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+  .game-row {
+    background: var(--card); border: 1px solid rgba(255,255,255,0.06); border-radius: 12px;
+    padding: 9px 8px; cursor: pointer; display: flex; flex-direction: column; gap: 6px; font-size: 13px;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.35), 0 1px 2px rgba(0,0,0,0.3);
+    transition: transform 0.1s ease, box-shadow 0.1s ease;
+  }
+  .game-row:active { transform: scale(0.99); box-shadow: 0 2px 8px rgba(0,0,0,0.35); }
+  .game-row.active { box-shadow: 0 4px 14px rgba(0,0,0,0.35), 0 0 0 1.5px var(--accent); }
+  .game-row .team-stack { display: flex; flex-direction: column; gap: 6px; }
+  .game-row .team-line { display: flex; align-items: center; gap: 5px; }
+  .game-row .team-line > span:last-child { display: flex; flex-direction: column; min-width: 0; }
+  .team-badge {
+    width: 20px; height: 20px; border-radius: 50%; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 7.5px; font-weight: 800; color: var(--ink); border: 1.5px solid rgba(255,255,255,0.18);
+    box-shadow: 0 1px 2px rgba(0,0,0,0.3);
+  }
+  .game-row .team-name { font-weight: 700; color: var(--ink); font-size: 10.5px; line-height: 1.15; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .game-row .team-record { font-size: 8.5px; color: var(--ink-soft); display: block; }
+  .game-row .divider-col { height: 1px; width: 100%; background: var(--line); }
+  .game-row .matchup-stack { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .game-row .matchup-time { font-size: 10px; font-weight: 700; color: var(--ink); margin-bottom: 1px; display: flex; align-items: center; gap: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .qb-line { display: flex; align-items: center; gap: 4px; }
+  .qb-avatar {
+    width: 14px; height: 14px; border-radius: 50%; flex-shrink: 0; background: var(--chalk); border: 1px solid var(--line);
+    display: flex; align-items: center; justify-content: center; font-size: 6px; font-weight: 700; color: var(--ink-soft);
+  }
+  .qb-info { font-size: 8.5px; line-height: 1.2; min-width: 0; }
+  .qb-info .q-name { color: var(--ink); font-weight: 600; display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+  .qb-info .q-flag { color: var(--amber); font-weight: 700; }
+  .qb-info .q-stats { color: var(--ink-soft); }
+  .live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--neg); animation: pulse 1.6s infinite; display: inline-block; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+  .matchup { background: var(--card); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; box-shadow: 0 2px 10px rgba(28,38,32,0.08); }
+  .scoreboard {
+    background: linear-gradient(135deg, var(--field) 0%, var(--field-dark) 100%);
+    color: var(--ink); padding: 22px 18px; display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 10px;
+  }
+  .scoreboard .team { text-align: center; }
+  .scoreboard .team .name { font-family: 'Arial Narrow', sans-serif; font-weight: 800; font-size: 17px; text-transform: uppercase; letter-spacing: 0.3px; line-height: 1.2; }
+  .scoreboard .team .record { font-size: 12px; color: var(--ink-soft); margin-top: 4px; }
+  .scoreboard .at { font-size: 11px; color: var(--ink-soft); border: 1px solid rgba(255,255,255,0.15); border-radius: 50%; width: 26px; height: 26px; display: flex; align-items: center; justify-content: center; }
+  .probbar-wrap { padding: 20px 18px; border-bottom: 1px solid var(--line); }
+  .probbar-nums-big { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
+  .probbar-nums-big .pct { font-size: 32px; font-weight: 800; font-family: 'Arial Narrow', sans-serif; }
+  .probbar-nums-big .pct.away { color: var(--dirt-light); }
+  .probbar-nums-big .pct.home { color: var(--field-light); }
+  .probbar-nums-big .abbr { font-size: 11px; color: var(--ink-soft); text-transform: uppercase; display: block; margin-top: 2px; }
+  .probbar { height: 10px; border-radius: 10px; overflow: hidden; display: flex; background: var(--line); }
+  .probbar .away { background: linear-gradient(90deg, var(--dirt-light), var(--dirt)); }
+  .probbar .home { background: linear-gradient(90deg, var(--field), var(--field-light)); }
+  .probbar-caption { text-align: center; font-size: 11.5px; color: var(--ink-soft); margin-top: 12px; line-height: 1.5; }
+  .odds-section { padding: 18px; }
+  .bet-tabs { display: flex; gap: 6px; padding: 12px 14px; background: var(--chalk); border-bottom: 1px solid var(--line); }
+  .bet-tab {
+    flex: 1; padding: 10px 6px; background: var(--card); border: 1.5px solid var(--line); border-radius: 10px;
+    font-family: 'Arial Narrow', sans-serif; font-weight: 700; font-size: 12.5px; text-transform: uppercase; letter-spacing: 0.3px;
+    color: var(--ink-soft); cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 5px;
+  }
+  .bet-tab .glyph { font-size: 13px; }
+  .bet-tab.active { color: var(--ink); background: var(--field); border-color: var(--field); }
+  .bet-panel { padding: 16px 18px; }
+  .plain-hint { font-size: 12.5px; color: var(--ink-soft); line-height: 1.5; margin: 0 0 14px; }
+  .odds-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+  .odds-field label { display: block; font-size: 11px; text-transform: uppercase; color: var(--ink-soft); margin-bottom: 5px; letter-spacing: 0.4px; font-weight: 600; }
+  .odds-field input {
+    width: 100%; padding: 11px 12px; font-family: 'SF Mono', ui-monospace, 'Courier New', monospace; font-size: 15px; font-weight: 600;
+    border: 1.5px solid var(--line); border-radius: 9px; background: var(--chalk); color: var(--ink);
+  }
+  .odds-field input:focus { outline: none; border-color: var(--amber); background: #1A4570; }
+  .result { margin-top: 10px; padding-top: 16px; border-top: 1px dashed var(--line); display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .result .col { text-align: center; padding: 14px 8px; border-radius: 12px; background: var(--chalk); border: 1.5px solid var(--line); }
+  .result .col.edge-pos { background: var(--amber-soft); border-color: var(--amber); }
+  .result .col.edge-neg { background: var(--neg-soft); border-color: var(--neg); }
+  .result .team-abbr { font-size: 11px; color: var(--ink-soft); text-transform: uppercase; font-weight: 600; }
+  .result .implied { font-size: 24px; font-weight: 800; margin: 6px 0 3px; font-family: 'SF Mono', ui-monospace, 'Courier New', monospace; }
+  .result .edge { font-size: 11.5px; }
+  .result .edge.pos { color: var(--amber); font-weight: 700; }
+  .result .edge.neg { color: var(--neg); }
+  footer { max-width: 60ch; margin: 26px auto 0; padding: 0 18px; font-size: 11.5px; color: var(--ink-soft); line-height: 1.6; text-align: center; }
+  .error-box { background: var(--neg-soft); border: 1px solid var(--neg); color: var(--neg); padding: 14px; border-radius: 3px; font-size: 13px; margin-bottom: 16px; }
+  details.game-details { border-top: 1px solid var(--line); }
+  details.game-details summary {
+    padding: 14px 18px; cursor: pointer; font-family: 'Arial Narrow', sans-serif; font-size: 13px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.4px; color: var(--field-light); list-style: none;
+  }
+  details.game-details summary::-webkit-details-marker { display: none; }
+  details.game-details summary::before { content: '+ '; }
+  details.game-details[open] summary::before { content: '– '; }
+  details.game-details .details-inner { padding: 0 18px 16px; }
+  .detail-block { margin-bottom: 18px; font-size: 12.5px; line-height: 1.6; }
+  .detail-block .detail-title { font-weight: 700; color: var(--ink); text-transform: uppercase; font-size: 11px; letter-spacing: 0.4px; margin-bottom: 8px; }
+  .detail-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { display: inline-flex; align-items: center; gap: 4px; background: var(--chalk); border: 1px solid var(--line); border-radius: 20px; padding: 5px 11px; font-size: 11.5px; color: var(--ink); }
+  .chip.chip-out { background: var(--amber-soft); border-color: var(--amber); }
+  .chip.chip-in { background: var(--pos-soft); border-color: var(--field); }
+  .chip.chip-neg { background: var(--neg-soft); border-color: var(--neg); }
+  .tabbar { display: flex; background: var(--field-dark); border-bottom: 1px solid rgba(255,255,255,0.1); }
+  .tab { flex: 1; background: none; border: none; color: var(--ink-soft); font-family: inherit; font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px; padding: 12px; cursor: pointer; }
+  .tab.active { color: var(--ink); border-bottom: 2px solid var(--amber); }
+  .log-bet-btn {
+    margin-top: 8px; width: 100%; padding: 8px; background: none; border: 1px dashed var(--ink-soft); border-radius: 3px;
+    color: var(--ink-soft); font-family: inherit; font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px; cursor: pointer;
+  }
+  .log-bet-btn:active { background: var(--chalk); }
+  .bets-summary { background: var(--field); color: var(--ink); padding: 16px 18px; display: flex; justify-content: space-around; text-align: center; }
+  .bets-summary .stat-num { font-size: 20px; font-weight: bold; }
+  .bets-summary .stat-label { font-size: 10px; color: var(--ink-soft); text-transform: uppercase; margin-top: 2px; }
+  .bet-card { background: var(--card); border: 1px solid var(--line); border-radius: 3px; padding: 12px 14px; margin: 10px 16px; font-size: 13px; }
+  .bet-card .bet-top { display: flex; justify-content: space-between; font-weight: bold; }
+  .bet-card .bet-meta { color: var(--ink-soft); font-size: 11px; margin-top: 4px; }
+  .bet-card .bet-actions { display: flex; gap: 8px; margin-top: 10px; }
+  .bet-card .bet-actions button { flex: 1; padding: 7px; font-family: inherit; font-size: 11px; text-transform: uppercase; border-radius: 3px; border: 1px solid var(--line); background: var(--chalk); cursor: pointer; }
+  .bet-card .bet-actions button.won { border-color: var(--field-light); color: var(--field-light); }
+  .bet-card .bet-actions button.lost { border-color: var(--neg); color: var(--neg); }
+  .bet-card.result-won { background: var(--pos-soft); border: 1.5px solid var(--field-light); border-left: 5px solid var(--field-light); }
+  .bet-card.result-lost { background: var(--neg-soft); border: 1.5px solid var(--neg); border-left: 5px solid var(--neg); }
+  .bet-card .delete-bet { color: var(--ink-soft); font-size: 11px; text-decoration: underline; background: none; border: none; cursor: pointer; padding: 0; margin-top: 8px; }
+  .parlay-section-title { padding: 16px 18px 6px; font-family: 'Arial Narrow', sans-serif; font-size: 14px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--ink); }
+  .parlay-card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; margin: 8px 16px; box-shadow: 0 1px 3px rgba(28,38,32,0.06); }
+  .parlay-legs { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+  .parlay-leg { display: flex; justify-content: space-between; font-size: 13px; }
+  .parlay-leg .leg-prob { color: var(--ink-soft); font-family: 'SF Mono', ui-monospace, monospace; }
+  .parlay-footer { display: flex; justify-content: space-between; align-items: center; border-top: 1px dashed var(--line); padding-top: 10px; }
+  .parlay-combined { font-size: 20px; font-weight: 800; font-family: 'SF Mono', ui-monospace, monospace; color: var(--field-light); }
+  .parlay-fairodds { font-size: 11px; color: var(--ink-soft); }
+
+  @media (min-width: 900px) {
+    main { max-width: 1100px; padding: 24px 32px; }
+    .games { gap: 14px; }
+    .game-row-pair { grid-template-columns: repeat(4, 1fr); gap: 14px; }
+    .game-row { padding: 16px 14px; border-radius: 16px; gap: 10px; }
+    .team-badge { width: 30px; height: 30px; font-size: 10.5px; }
+    .game-row .team-name { font-size: 13px; }
+    .game-row .team-record { font-size: 11px; }
+    .game-row .matchup-time { font-size: 12.5px; }
+    .qb-avatar { width: 20px; height: 20px; font-size: 8px; }
+    .qb-info { font-size: 11px; }
+    .matchup { max-width: 640px; margin: 0 auto; }
+    .bet-card, .parlay-card { max-width: 640px; margin-left: auto; margin-right: auto; }
+    header, .tabbar, .datebar { padding-left: 32px; padding-right: 32px; }
+  }
+  @media (min-width: 1300px) { main { max-width: 1400px; } }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Gridiron</h1>
+  <p>Estimates a win probability for each NFL matchup from scoring differential, recent form, rest, travel, and weather — then compares it against odds you enter.</p>
+  <span class="demo-flag">Running on sample season data, not live NFL feeds</span>
+</header>
+
+<div class="tabbar">
+  <button id="tabGames" class="tab active">Games</button>
+  <button id="tabParlays" class="tab">Parlays</button>
+  <button id="tabBets" class="tab">My Bets</button>
+  <button id="tabBacktest" class="tab">Backtest</button>
+</div>
+
+<div class="datebar" id="weekbarEl">
+  <button id="prevWeek">‹</button>
+  <span id="dateLabel">Loading…</span>
+  <button id="nextWeek">›</button>
+</div>
+
+<main>
+  <div id="gamesView">
+    <div id="gamesContainer" class="status">Loading this week's games…</div>
+    <div id="matchupContainer"></div>
+  </div>
+  <div id="parlaysView" style="display:none;"></div>
+  <div id="betsView" style="display:none;"></div>
+  <div id="backtestView" style="display:none;"></div>
+</main>
+
+<footer>
+  Model blends scoring differential (Pythagorean win expectation), season record, home/away-specific record, and recent form, then layers on starting-QB status, rest since last game, travel distance/time-zone shift, and weather, with a calibration adjustment based on backtested results — it is not a guarantee and doesn't account for everything a sportsbook prices in. All data on this page is generated sample data for demonstration, not a live feed. Use it as one input, not the whole decision. Bet only what you can afford to lose.
+</footer>
+
+<script>
+/* ============================== Teams & season setup ============================== */
+const TEAMS = [
+  {id:1,abbr:'BUF',city:'Buffalo',name:'Bills',color:'#00338D',conf:'AFC',div:'East',lat:42.77,lon:-78.79,dome:false,stadium:'Highmark Stadium'},
+  {id:2,abbr:'MIA',city:'Miami',name:'Dolphins',color:'#008E97',conf:'AFC',div:'East',lat:25.76,lon:-80.19,dome:false,stadium:'Hard Rock Stadium'},
+  {id:3,abbr:'NE',city:'New England',name:'Patriots',color:'#0C2340',conf:'AFC',div:'East',lat:42.09,lon:-71.26,dome:false,stadium:'Gillette Stadium'},
+  {id:4,abbr:'NYJ',city:'New York',name:'Jets',color:'#125740',conf:'AFC',div:'East',lat:40.81,lon:-74.07,dome:false,stadium:'MetLife Stadium'},
+  {id:5,abbr:'BAL',city:'Baltimore',name:'Ravens',color:'#241773',conf:'AFC',div:'North',lat:39.28,lon:-76.62,dome:false,stadium:'M&T Bank Stadium'},
+  {id:6,abbr:'CIN',city:'Cincinnati',name:'Bengals',color:'#FB4F14',conf:'AFC',div:'North',lat:39.10,lon:-84.51,dome:false,stadium:'Paycor Stadium'},
+  {id:7,abbr:'CLE',city:'Cleveland',name:'Browns',color:'#FF3C00',conf:'AFC',div:'North',lat:41.51,lon:-81.70,dome:false,stadium:'Huntington Bank Field'},
+  {id:8,abbr:'PIT',city:'Pittsburgh',name:'Steelers',color:'#FFB612',conf:'AFC',div:'North',lat:40.45,lon:-80.02,dome:false,stadium:'Acrisure Stadium'},
+  {id:9,abbr:'HOU',city:'Houston',name:'Texans',color:'#03202F',conf:'AFC',div:'South',lat:29.68,lon:-95.41,dome:true,stadium:'NRG Stadium'},
+  {id:10,abbr:'IND',city:'Indianapolis',name:'Colts',color:'#002C5F',conf:'AFC',div:'South',lat:39.76,lon:-86.16,dome:true,stadium:'Lucas Oil Stadium'},
+  {id:11,abbr:'JAX',city:'Jacksonville',name:'Jaguars',color:'#D7A22A',conf:'AFC',div:'South',lat:30.32,lon:-81.66,dome:false,stadium:'EverBank Stadium'},
+  {id:12,abbr:'TEN',city:'Tennessee',name:'Titans',color:'#4B92DB',conf:'AFC',div:'South',lat:36.17,lon:-86.77,dome:false,stadium:'Nissan Stadium'},
+  {id:13,abbr:'DEN',city:'Denver',name:'Broncos',color:'#FB4F14',conf:'AFC',div:'West',lat:39.74,lon:-105.02,dome:false,stadium:'Empower Field at Mile High'},
+  {id:14,abbr:'KC',city:'Kansas City',name:'Chiefs',color:'#E31837',conf:'AFC',div:'West',lat:39.05,lon:-94.48,dome:false,stadium:'GEHA Field at Arrowhead'},
+  {id:15,abbr:'LV',city:'Las Vegas',name:'Raiders',color:'#A5ACAF',conf:'AFC',div:'West',lat:36.09,lon:-115.18,dome:true,stadium:'Allegiant Stadium'},
+  {id:16,abbr:'LAC',city:'Los Angeles',name:'Chargers',color:'#0080C6',conf:'AFC',div:'West',lat:33.95,lon:-118.34,dome:true,stadium:'SoFi Stadium'},
+  {id:17,abbr:'DAL',city:'Dallas',name:'Cowboys',color:'#869397',conf:'NFC',div:'East',lat:32.75,lon:-97.09,dome:true,stadium:'AT&T Stadium'},
+  {id:18,abbr:'NYG',city:'New York',name:'Giants',color:'#0B2265',conf:'NFC',div:'East',lat:40.81,lon:-74.07,dome:false,stadium:'MetLife Stadium'},
+  {id:19,abbr:'PHI',city:'Philadelphia',name:'Eagles',color:'#004C54',conf:'NFC',div:'East',lat:39.90,lon:-75.17,dome:false,stadium:'Lincoln Financial Field'},
+  {id:20,abbr:'WAS',city:'Washington',name:'Commanders',color:'#5A1414',conf:'NFC',div:'East',lat:38.91,lon:-76.86,dome:false,stadium:'Northwest Stadium'},
+  {id:21,abbr:'CHI',city:'Chicago',name:'Bears',color:'#0B162A',conf:'NFC',div:'North',lat:41.86,lon:-87.62,dome:false,stadium:'Soldier Field'},
+  {id:22,abbr:'DET',city:'Detroit',name:'Lions',color:'#0076B6',conf:'NFC',div:'North',lat:42.34,lon:-83.05,dome:true,stadium:'Ford Field'},
+  {id:23,abbr:'GB',city:'Green Bay',name:'Packers',color:'#203731',conf:'NFC',div:'North',lat:44.50,lon:-88.06,dome:false,stadium:'Lambeau Field'},
+  {id:24,abbr:'MIN',city:'Minnesota',name:'Vikings',color:'#4F2683',conf:'NFC',div:'North',lat:44.97,lon:-93.26,dome:true,stadium:'U.S. Bank Stadium'},
+  {id:25,abbr:'ATL',city:'Atlanta',name:'Falcons',color:'#A71930',conf:'NFC',div:'South',lat:33.76,lon:-84.40,dome:true,stadium:'Mercedes-Benz Stadium'},
+  {id:26,abbr:'CAR',city:'Carolina',name:'Panthers',color:'#0085CA',conf:'NFC',div:'South',lat:35.23,lon:-80.85,dome:false,stadium:'Bank of America Stadium'},
+  {id:27,abbr:'NO',city:'New Orleans',name:'Saints',color:'#D3BC8D',conf:'NFC',div:'South',lat:29.95,lon:-90.08,dome:true,stadium:'Caesars Superdome'},
+  {id:28,abbr:'TB',city:'Tampa Bay',name:'Buccaneers',color:'#D50A0A',conf:'NFC',div:'South',lat:27.98,lon:-82.50,dome:false,stadium:'Raymond James Stadium'},
+  {id:29,abbr:'ARI',city:'Arizona',name:'Cardinals',color:'#97233F',conf:'NFC',div:'West',lat:33.53,lon:-112.26,dome:true,stadium:'State Farm Stadium'},
+  {id:30,abbr:'LAR',city:'Los Angeles',name:'Rams',color:'#003594',conf:'NFC',div:'West',lat:33.95,lon:-118.34,dome:true,stadium:'SoFi Stadium'},
+  {id:31,abbr:'SF',city:'San Francisco',name:'49ers',color:'#AA0000',conf:'NFC',div:'West',lat:37.40,lon:-121.97,dome:false,stadium:"Levi's Stadium"},
+  {id:32,abbr:'SEA',city:'Seattle',name:'Seahawks',color:'#69BE28',conf:'NFC',div:'West',lat:47.60,lon:-122.33,dome:false,stadium:'Lumen Field'}
+];
+const TEAM_BY_ID = new Map(TEAMS.map(t => [t.id, t]));
+
+const QB_FIRST = ["Jordan","Miles","Trevor","Caleb","Tyler","Brock","Derek","Marcus","Cole","Wyatt","Beau","Chase","Grant","Reid","Blake","Hunter","Colt","Ryder","Jace","Deshawn","Malik","Xavier","Isaiah","Elijah","Damian","Trey","Kellan","Sawyer","Nash","Rhett","Cash","Bo"];
+const QB_LAST = ["Harmon","Sterling","Kessler","Doyle","Whitfield","Marsh","Colton","Reyes","Fenwick","Voss","Hargrove","Brennan","Osei","Calloway","Danforth","Quale","Beckwith","Larkspur","Monroe","Ashby","Tolliver","Redding","Vance","Okafor","Sandoval","Priestly","Kwan","Ferro","Lund","Bishop","Rourke","Castellan"];
+
+const SEASON_YEAR = 2026;
+const SEASON_WEEK1_START = new Date('2026-09-10T00:00:00Z'); // a Thursday
+const TOTAL_WEEKS = 18;
+// This demo pretends we're partway through the season so Games/Bets/Backtest all have
+// something interesting to show, rather than tying it to today's real-world date.
+const MOCK_CURRENT_WEEK = 6;
+
+/* ============================== Seeded RNG (deterministic mock data) ============================== */
+function seedFromStr(s) {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return h >>> 0;
+}
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+function makeRng(seedStr) { return mulberry32(seedFromStr(seedStr)); }
+function rand(seedStr) { return makeRng(seedStr)(); }
+function shuffleWithRng(arr, rng) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+/* ============================== Schedule generation ============================== */
+const KICK_SLOTS = ['8:15 PM','1:00 PM','1:00 PM','1:00 PM','1:00 PM','1:00 PM','1:00 PM','4:05 PM','4:05 PM','4:05 PM','4:25 PM','4:25 PM','4:25 PM','8:20 PM','1:00 PM','8:15 PM'];
+const KICK_DAY_OFFSET = [0,3,3,3,3,3,3,3,3,3,3,3,3,3,3,4]; // days after that week's Thursday
+
+function buildWeekGames(week) {
+  const rng = makeRng('gridiron-week-' + week);
+  const ids = shuffleWithRng(TEAMS.map(t => t.id), rng);
+  const weekStart = new Date(SEASON_WEEK1_START.getTime() + (week - 1) * 7 * 86400000);
+  const games = [];
+  for (let k = 0; k < 16; k++) {
+    const teamA = ids[k * 2], teamB = ids[k * 2 + 1];
+    const homeFirst = (week + k) % 2 === 0;
+    const homeId = homeFirst ? teamA : teamB;
+    const awayId = homeFirst ? teamB : teamA;
+    const gameDate = new Date(weekStart.getTime() + KICK_DAY_OFFSET[k] * 86400000);
+    // approximate ET kickoff hour baked into the label only; keep gameDate at a stable hour for sorting
+    gameDate.setUTCHours(17 + (k % 4), 0, 0, 0);
+    games.push({
+      gamePk: `${SEASON_YEAR}-W${week}-${awayId}-${homeId}`,
+      week, gameDate: gameDate.toISOString(), kickLabel: KICK_SLOTS[k],
+      awayId, homeId
+    });
+  }
+  return games.sort((a, b) => new Date(a.gameDate) - new Date(b.gameDate));
+}
+
+function genScore(seedStr, mean) {
+  const r1 = rand(seedStr + '-a'), r2 = rand(seedStr + '-b');
+  // Box-Muller-ish spread around a mean, clamped to a plausible NFL score range.
+  const z = Math.sqrt(-2 * Math.log(Math.max(r1, 0.0001))) * Math.cos(2 * Math.PI * r2);
+  return Math.max(3, Math.min(48, Math.round(mean + z * 9)));
+}
+
+const ALL_GAMES = [];
+const GAMES_BY_WEEK = new Map();
+for (let w = 1; w <= TOTAL_WEEKS; w++) {
+  const games = buildWeekGames(w);
+  GAMES_BY_WEEK.set(w, games);
+  games.forEach(g => ALL_GAMES.push(g));
+}
+const GAME_LOOKUP = new Map(ALL_GAMES.map(g => [g.gamePk, g]));
+
+// Resolve status + scores (Final for past weeks, one Live flavor game in the current week).
+ALL_GAMES.forEach(g => {
+  if (g.week < MOCK_CURRENT_WEEK) {
+    const homeMean = 21 + (rand(g.gamePk + '-hm') - 0.5) * 10;
+    const awayMean = 20 + (rand(g.gamePk + '-am') - 0.5) * 10;
+    g.homeScore = genScore(g.gamePk + '-h', homeMean);
+    g.awayScore = genScore(g.gamePk + '-a', awayMean);
+    g.state = 'Final';
+  } else if (g.week === MOCK_CURRENT_WEEK) {
+    const weekGames = GAMES_BY_WEEK.get(g.week);
+    const idx = weekGames.indexOf(g);
+    if (idx === 0) {
+      const homeMean = 21 + (rand(g.gamePk + '-hm') - 0.5) * 10;
+      const awayMean = 20 + (rand(g.gamePk + '-am') - 0.5) * 10;
+      g.homeScore = genScore(g.gamePk + '-h', homeMean);
+      g.awayScore = genScore(g.gamePk + '-a', awayMean);
+      g.state = 'Final';
+    } else if (idx === 1) {
+      g.state = 'Live';
+      g.homeScore = Math.round(rand(g.gamePk + '-lh') * 21);
+      g.awayScore = Math.round(rand(g.gamePk + '-la') * 21);
+      g.liveQuarter = 'Q3';
+      g.liveClock = '8:42';
+    } else {
+      g.state = 'Preview';
+    }
+  } else {
+    g.state = 'Preview';
+  }
+});
+
+/* ============================== Standings / form, as of a given week ============================== */
+function computeStandingsThroughWeek(week) {
+  const map = new Map();
+  TEAMS.forEach(t => map.set(t.id, {
+    wins: 0, losses: 0, ties: 0, pointsFor: 0, pointsAgainst: 0,
+    homeW: 0, homeL: 0, awayW: 0, awayL: 0, last5: []
+  }));
+  const priorGames = ALL_GAMES.filter(g => g.week < week && g.state === 'Final')
+    .sort((a, b) => new Date(a.gameDate) - new Date(b.gameDate));
+  priorGames.forEach(g => {
+    const home = map.get(g.homeId), away = map.get(g.awayId);
+    home.pointsFor += g.homeScore; home.pointsAgainst += g.awayScore;
+    away.pointsFor += g.awayScore; away.pointsAgainst += g.homeScore;
+    if (g.homeScore > g.awayScore) {
+      home.wins++; home.homeW++; away.losses++; away.awayL++;
+      home.last5.push(1); away.last5.push(0);
+    } else if (g.awayScore > g.homeScore) {
+      away.wins++; away.awayW++; home.losses++; home.homeL++;
+      home.last5.push(0); away.last5.push(1);
+    } else {
+      home.ties++; away.ties++; home.last5.push(0.5); away.last5.push(0.5);
+    }
+  });
+  map.forEach(s => { s.last5 = s.last5.slice(-5); });
+  return map;
+}
+
+function gamesPlayed(s) { return s ? s.wins + s.losses + s.ties : 0; }
+function pctFromRecord(s) { const gp = gamesPlayed(s); return gp > 0 ? (s.wins + 0.5 * s.ties) / gp : null; }
+function splitPct(s, side) {
+  if (!s) return null;
+  const w = side === 'home' ? s.homeW : s.awayW, l = side === 'home' ? s.homeL : s.awayL;
+  return (w + l) > 0 ? w / (w + l) : null;
+}
+function last5Pct(s) { return (s && s.last5.length) ? s.last5.reduce((a, b) => a + b, 0) / s.last5.length : null; }
+// NFL Pythagorean win expectation commonly uses an exponent around 2.37 (vs ~1.83 in baseball).
+const PYTH_EXPONENT = 2.37;
+function pythPct(s) {
+  if (!s || gamesPlayed(s) === 0) return null;
+  const pf = Math.pow(s.pointsFor, PYTH_EXPONENT), pa = Math.pow(s.pointsAgainst, PYTH_EXPONENT);
+  return pf / (pf + pa);
+}
+function blendPct(overall, pyth, split, l5) {
+  let weightSum = 0, valueSum = 0;
+  const add = (val, w) => { if (val !== null && val !== undefined && !isNaN(val)) { valueSum += val * w; weightSum += w; } };
+  add(overall, 0.20); add(pyth, 0.45); add(split, 0.20); add(l5, 0.15);
+  return weightSum > 0 ? valueSum / weightSum : 0.5;
+}
+function log5(pctA, pctB) {
+  const num = pctA - pctA * pctB, den = pctA + pctB - 2 * pctA * pctB;
+  return den === 0 ? 0.5 : num / den;
+}
+// Backtesting this blend against the sample season showed it running a few points
+// overconfident, so shrink partway back toward 50/50 — a first-pass correction, not exact.
+const MONEYLINE_SHRINKAGE = 0.85;
+function applyShrinkage(prob, factor) { return 0.5 + (prob - 0.5) * factor; }
+
+function computeBaseWinProb(awayStats, homeStats) {
+  const awayPct = blendPct(pctFromRecord(awayStats), pythPct(awayStats), splitPct(awayStats, 'away'), last5Pct(awayStats));
+  const homePct = blendPct(pctFromRecord(homeStats), pythPct(homeStats), splitPct(homeStats, 'home'), last5Pct(homeStats));
+  const homeWinProb = applyShrinkage(log5(homePct, awayPct), MONEYLINE_SHRINKAGE);
+  return { homeWinProb, awayWinProb: 1 - homeWinProb };
+}
+
+/* ============================== QB, injuries, weather, rest & travel (mock) ============================== */
+function getQB(teamId) {
+  const t = TEAM_BY_ID.get(teamId);
+  const first = QB_FIRST[(teamId - 1) % QB_FIRST.length];
+  const last = QB_LAST[(teamId - 1) % QB_LAST.length];
+  const rating = Math.round(78 + rand('qb-rating-' + teamId) * 30);
+  return { name: `${first[0]}. ${last}`, fullName: `${first} ${last}`, rating };
+}
+function getQBStatus(teamId, week) {
+  const r = rand(`qb-status-${teamId}-${week}`);
+  if (r < 0.05) return 'Out';
+  if (r < 0.12) return 'Questionable';
+  return 'Healthy';
+}
+function getWeather(g) {
+  const home = TEAM_BY_ID.get(g.homeId);
+  if (home.dome) return { available: true, isDome: true };
+  const tempF = Math.round(35 + rand(g.gamePk + '-temp') * 45);
+  const windMph = Math.round(rand(g.gamePk + '-wind') * 20);
+  const precip = rand(g.gamePk + '-precip') < 0.15;
+  return { available: true, isDome: false, tempF, windMph, precip };
+}
+function haversineMiles(lat1, lon1, lat2, lon2) {
+  const toRad = d => d * Math.PI / 180;
+  const R = 3958.8;
+  const dLat = toRad(lat2 - lat1), dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return Math.round(R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
+}
+function tzBucket(lon) { if (lon >= -85) return -5; if (lon >= -100) return -6; if (lon >= -111) return -7; return -8; }
+function getRestDays(teamId, g) {
+  const prior = ALL_GAMES.filter(x => (x.homeId === teamId || x.awayId === teamId) && new Date(x.gameDate) < new Date(g.gameDate))
+    .sort((a, b) => new Date(b.gameDate) - new Date(a.gameDate))[0];
+  if (!prior) return null;
+  return Math.round((new Date(g.gameDate) - new Date(prior.gameDate)) / 86400000);
+}
+function getTravelContext(teamId, g) {
+  const team = TEAM_BY_ID.get(teamId);
+  const home = TEAM_BY_ID.get(g.homeId);
+  if (teamId === g.homeId) return { miles: 0, tzShift: 0, restDays: getRestDays(teamId, g) };
+  const miles = haversineMiles(team.lat, team.lon, home.lat, home.lon);
+  const tzShift = tzBucket(home.lon) - tzBucket(team.lon);
+  return { miles, tzShift, restDays: getRestDays(teamId, g) };
+}
+function getInjuryReport(teamId, week) {
+  const positions = ['WR1', 'RB1', 'LT', 'CB1', 'TE1'];
+  const rng = makeRng(`injury-${teamId}-${week}`);
+  const entries = [];
+  positions.forEach(pos => {
+    const r = rng();
+    if (r < 0.10) entries.push({ pos, status: 'Out' });
+    else if (r < 0.22) entries.push({ pos, status: 'Questionable' });
+  });
+  return entries.slice(0, 3);
+}
+
+/* ============================== Points projection, spread & total ============================== */
+function projectPoints(awayStats, homeStats) {
+  const awayGP = gamesPlayed(awayStats), homeGP = gamesPlayed(homeStats);
+  const LEAGUE_AVG = 22.5;
+  const awayRPG = awayGP ? awayStats.pointsFor / awayGP : LEAGUE_AVG;
+  const awayAPG = awayGP ? awayStats.pointsAgainst / awayGP : LEAGUE_AVG;
+  const homeRPG = homeGP ? homeStats.pointsFor / homeGP : LEAGUE_AVG;
+  const homeAPG = homeGP ? homeStats.pointsAgainst / homeGP : LEAGUE_AVG;
+  const expectedAwayPts = (awayRPG + homeAPG) / 2;
+  const expectedHomePts = (homeRPG + awayAPG) / 2;
+  return {
+    expectedAwayPts, expectedHomePts,
+    expectedMargin: expectedHomePts - expectedAwayPts,
+    expectedTotal: expectedAwayPts + expectedHomePts
+  };
+}
+function normalCDF(z) {
+  const t = 1 / (1 + 0.2316419 * Math.abs(z));
+  const d = 0.3989423 * Math.exp(-z * z / 2);
+  let p = d * t * (0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.821256 + t * 1.330274))));
+  if (z > 0) p = 1 - p;
+  return p;
+}
+// Rough NFL margin/total standard deviations, in the same spirit as the run-differential
+// approximation used for baseball — a reasonable planning number, not a precise fit.
+const MARGIN_STD_DEV = 13.5;
+const TOTAL_STD_DEV = 10.5;
+function spreadProbs(projection, line) {
+  if (!projection) return null;
+  const z = (line - projection.expectedMargin) / MARGIN_STD_DEV;
+  const homeCoversProb = 1 - normalCDF(z);
+  return { home: homeCoversProb, away: 1 - homeCoversProb };
+}
+function totalProbs(projection, total) {
+  if (!projection) return null;
+  const z = (total - projection.expectedTotal) / TOTAL_STD_DEV;
+  const overProb = 1 - normalCDF(z);
+  return { over: overProb, under: 1 - overProb };
+}
+function probToAmerican(p) {
+  if (p <= 0 || p >= 1) return null;
+  return p >= 0.5 ? Math.round(-100 * p / (1 - p)) : Math.round(100 * (1 - p) / p);
+}
+function americanToImplied(odds) {
+  const n = parseFloat(odds);
+  if (isNaN(n) || n === 0) return null;
+  return n > 0 ? 100 / (n + 100) : -n / (-n + 100);
+}
+
+/* ============================== Kalshi mock odds ============================== */
+function mockKalshiMoneyline(g, homeWinProb, useRandom) {
+  const rf = useRandom ? Math.random : () => rand(g.gamePk + '-kml-' + Date.now());
+  const missSeed = useRandom ? Math.random() : rand(g.gamePk + '-kml-miss');
+  if (missSeed < 0.08) return { available: false };
+  const noise = (rf() - 0.5) * 0.06;
+  const homeProb = Math.min(0.95, Math.max(0.05, homeWinProb + noise));
+  const yesTeam = rf() > 0.5 ? TEAM_BY_ID.get(g.homeId).abbr : TEAM_BY_ID.get(g.awayId).abbr;
+  const yesProb = yesTeam === TEAM_BY_ID.get(g.homeId).abbr ? homeProb : 1 - homeProb;
+  return { available: true, yesTeam, yesProb, movementDelta: (rand(g.gamePk + '-mv') - 0.5) * 0.06, movementMinutes: 45 + Math.round(rand(g.gamePk + '-mvm') * 120) };
+}
+function mockKalshiSpread(g, projection, useRandom) {
+  const rf = useRandom ? Math.random : () => rand(g.gamePk + '-krl-' + Date.now());
+  const missSeed = useRandom ? Math.random() : rand(g.gamePk + '-krl-miss');
+  if (missSeed < 0.12 || !projection) return { available: false, lines: [] };
+  const line = Math.round(Math.abs(projection.expectedMargin) * 2) / 2 || 2.5;
+  const favoredTeam = projection.expectedMargin >= 0 ? TEAM_BY_ID.get(g.homeId).abbr : TEAM_BY_ID.get(g.awayId).abbr;
+  const baseProb = 0.5 + (rf() - 0.5) * 0.08;
+  return { available: true, lines: [{ line, favoredTeam, yesProb: baseProb }] };
+}
+function mockKalshiTotal(g, projection, useRandom) {
+  const rf = useRandom ? Math.random : () => rand(g.gamePk + '-ktot-' + Date.now());
+  const missSeed = useRandom ? Math.random() : rand(g.gamePk + '-ktot-miss');
+  if (missSeed < 0.12 || !projection) return { available: false, lines: [] };
+  const line = Math.round(projection.expectedTotal * 2) / 2;
+  const overProb = 0.5 + (rf() - 0.5) * 0.08;
+  return { available: true, lines: [{ line, overProb }] };
+}
+
+/* ============================== Rendering helpers ============================== */
+function readableTextColor(hexColor) {
+  const hex = hexColor.replace('#', '');
+  const r = parseInt(hex.substring(0, 2), 16), g = parseInt(hex.substring(2, 4), 16), b = parseInt(hex.substring(4, 6), 16);
+  const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return luminance > 0.6 ? '#12253F' : '#F2F4F8';
+}
+function fmtWeekLabel(week) {
+  const weekStart = new Date(SEASON_WEEK1_START.getTime() + (week - 1) * 7 * 86400000);
+  const weekEnd = new Date(weekStart.getTime() + 4 * 86400000);
+  const isCurrent = week === MOCK_CURRENT_WEEK;
+  const rangeStr = `${weekStart.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}–${weekEnd.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`;
+  return `
+    <span class="date-day${isCurrent ? ' is-today' : ''}">${isCurrent ? 'THIS WEEK' : 'WEEK ' + week}</span>
+    <span class="date-num">Week ${week} · ${rangeStr}</span>
+    ${isCurrent ? '<span class="date-dot"></span>' : ''}
+  `;
+}
+function statusLabel(g) {
+  const away = TEAM_BY_ID.get(g.awayId), home = TEAM_BY_ID.get(g.homeId);
+  if (g.state === 'Preview') {
+    const dayStr = new Date(g.gameDate).toLocaleDateString('en-US', { weekday: 'short' });
+    return `${dayStr} ${g.kickLabel}`;
+  }
+  if (g.state === 'Final') return `Final ${g.awayScore}-${g.homeScore}`;
+  if (g.state === 'Live') return `<span class="live-dot"></span>${g.awayScore}-${g.homeScore} · ${g.liveQuarter} ${g.liveClock}`;
+  return '';
+}
+function initials(fullName) {
+  const parts = fullName.trim().split(' ');
+  return parts.length > 1 ? (parts[0][0] + parts[parts.length - 1][0]).toUpperCase() : fullName.slice(0, 2).toUpperCase();
+}
+function qbLineHTML(teamId, week) {
+  const qb = getQB(teamId);
+  const status = getQBStatus(teamId, week);
+  const flag = status !== 'Healthy' ? `<span class="q-flag"> ${status === 'Out' ? '(OUT)' : '(Q)'}</span>` : '';
+  return `
+    <div class="qb-line">
+      <span class="qb-avatar">${initials(qb.fullName)}</span>
+      <span class="qb-info">
+        <span class="q-name">${qb.name}</span>${flag}<br>
+        <span class="q-stats">Rating ${qb.rating.toFixed(1)}</span>
+      </span>
+    </div>
+  `;
+}
+
+let currentWeek = MOCK_CURRENT_WEEK;
+let gamesCache = [];
+
+function loadGames() {
+  const container = document.getElementById('gamesContainer');
+  const matchupContainer = document.getElementById('matchupContainer');
+  if (matchupContainer.parentElement === container) container.insertAdjacentElement('afterend', matchupContainer);
+  matchupContainer.innerHTML = '';
+  openGameId = null;
+
+  document.getElementById('dateLabel').innerHTML = fmtWeekLabel(currentWeek);
+  const games = GAMES_BY_WEEK.get(currentWeek);
+  gamesCache = games;
+
+  if (!games.length) { container.className = 'status'; container.textContent = 'No games scheduled this week.'; return; }
+
+  container.className = 'games';
+  container.innerHTML = '';
+  const groupSize = window.innerWidth >= 900 ? 4 : 3;
+  let currentRowPair = null;
+
+  games.forEach((g, idx) => {
+    if (idx % groupSize === 0) { currentRowPair = document.createElement('div'); currentRowPair.className = 'game-row-pair'; container.appendChild(currentRowPair); }
+    const row = document.createElement('div');
+    row.className = 'game-row';
+    row.dataset.gameId = g.gamePk;
+    const away = TEAM_BY_ID.get(g.awayId), home = TEAM_BY_ID.get(g.homeId);
+    const standings = computeStandingsThroughWeek(g.week);
+    const awayRec = standings.get(g.awayId), homeRec = standings.get(g.homeId);
+    const awayRecStr = `${awayRec.wins}-${awayRec.losses}${awayRec.ties ? '-' + awayRec.ties : ''}`;
+    const homeRecStr = `${homeRec.wins}-${homeRec.losses}${homeRec.ties ? '-' + homeRec.ties : ''}`;
+
+    row.innerHTML = `
+      <div class="team-stack">
+        <div class="team-line">
+          <span class="team-badge" style="background:${away.color}; color:${readableTextColor(away.color)};">${away.abbr}</span>
+          <span><span class="team-name">${away.city} ${away.name}</span><span class="team-record">${awayRecStr}</span></span>
+        </div>
+        <div class="team-line">
+          <span class="team-badge" style="background:${home.color}; color:${readableTextColor(home.color)};">${home.abbr}</span>
+          <span><span class="team-name">${home.city} ${home.name}</span><span class="team-record">${homeRecStr}</span></span>
+        </div>
+      </div>
+      <div class="divider-col"></div>
+      <div class="matchup-stack">
+        <div class="matchup-time">${statusLabel(g)}</div>
+        ${qbLineHTML(g.awayId, g.week)}
+        ${qbLineHTML(g.homeId, g.week)}
+      </div>
+    `;
+    row.addEventListener('click', () => selectGame(g.gamePk, row));
+    currentRowPair.appendChild(row);
+  });
+}
+
+let openGameId = null;
+function selectGame(gamePk, rowEl) {
+  const matchupEl = document.getElementById('matchupContainer');
+  if (String(openGameId) === String(gamePk)) {
+    openGameId = null; matchupEl.innerHTML = '';
+    document.querySelectorAll('.game-row').forEach(el => el.classList.remove('active'));
+    return;
+  }
+  openGameId = gamePk;
+  document.querySelectorAll('.game-row').forEach(el => el.classList.toggle('active', String(el.dataset.gameId) === String(gamePk)));
+  if (rowEl) {
+    const rowPair = rowEl.closest('.game-row-pair') || rowEl;
+    rowPair.insertAdjacentElement('afterend', matchupEl);
+    rowEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+  renderMatchup(gamePk);
+}
+
+let currentMatchup = null, lastEdgeState = null, lastSpreadState = null, lastTotalState = null;
+
+function renderMatchup(gamePk) {
+  const el = document.getElementById('matchupContainer');
+  const g = GAME_LOOKUP.get(gamePk);
+  if (!g) { el.innerHTML = ''; return; }
+  const away = TEAM_BY_ID.get(g.awayId), home = TEAM_BY_ID.get(g.homeId);
+  const standings = computeStandingsThroughWeek(g.week);
+  const awayStats = standings.get(g.awayId), homeStats = standings.get(g.homeId);
+
+  const { homeWinProb: baseHomeWinProb } = computeBaseWinProb(awayStats, homeStats);
+  let homeWinProb = baseHomeWinProb;
+
+  const awayQBStatus = getQBStatus(g.awayId, g.week);
+  const homeQBStatus = getQBStatus(g.homeId, g.week);
+  if (awayQBStatus === 'Out') homeWinProb = Math.min(0.95, homeWinProb + 0.10);
+  if (homeQBStatus === 'Out') homeWinProb = Math.max(0.05, homeWinProb - 0.10);
+
+  const awayTravel = getTravelContext(g.awayId, g);
+  const homeTravel = getTravelContext(g.homeId, g);
+  function restShift(t) {
+    if (t.restDays === null) return 0;
+    if (t.restDays <= 4) return -0.03; // short week
+    if (t.restDays >= 10) return 0.02; // extra rest / bye
+    return 0;
+  }
+  homeWinProb = Math.min(0.95, Math.max(0.05, homeWinProb - restShift(awayTravel) + restShift(homeTravel)));
+  if (awayTravel.miles > 1500) homeWinProb = Math.min(0.95, homeWinProb + 0.02);
+
+  const awayWinProb = 1 - homeWinProb;
+  const homePctDisplay = Math.round(homeWinProb * 100);
+  const awayPctDisplay = 100 - homePctDisplay;
+
+  const projection = projectPoints(awayStats, homeStats);
+  const weather = getWeather(g);
+  if (weather.available && !weather.isDome) {
+    if (weather.windMph >= 15) projection.expectedTotal -= 1.5;
+    if (weather.tempF <= 32) projection.expectedTotal -= 1.0;
+    if (weather.precip) projection.expectedTotal -= 1.0;
+  }
+
+  const kalshiML = mockKalshiMoneyline(g, homeWinProb, false);
+  const kalshiSpread = mockKalshiSpread(g, projection, false);
+  const kalshiTotal = mockKalshiTotal(g, projection, false);
+
+  let defaultSpread = Math.round(Math.abs(projection.expectedMargin) * 2) / 2 || 2.5;
+  let favoredSide = projection.expectedMargin >= 0 ? 'home' : 'away';
+  if (kalshiSpread.available && kalshiSpread.lines.length) {
+    defaultSpread = kalshiSpread.lines[0].line;
+    favoredSide = kalshiSpread.lines[0].favoredTeam === home.abbr ? 'home' : 'away';
+  }
+  let defaultTotal = (Math.round(projection.expectedTotal * 2) / 2).toFixed(1);
+  if (kalshiTotal.available && kalshiTotal.lines.length) defaultTotal = kalshiTotal.lines[0].line;
+
+  // Season series so far (teams in the same division sometimes rematch, though a full
+  // demo schedule doesn't guarantee it).
+  const priorMeeting = ALL_GAMES.find(x => x.week < g.week && x.state === 'Final' &&
+    ((x.homeId === g.homeId && x.awayId === g.awayId) || (x.homeId === g.awayId && x.awayId === g.homeId)));
+
+  el.innerHTML = `
+    <div class="matchup">
+      <div class="scoreboard">
+        <div class="team"><div class="name">${away.city} ${away.name}</div><div class="record">${awayStats.wins}-${awayStats.losses}${awayStats.ties ? '-' + awayStats.ties : ''}</div></div>
+        <div class="at">@</div>
+        <div class="team"><div class="name">${home.city} ${home.name}</div><div class="record">${homeStats.wins}-${homeStats.losses}${homeStats.ties ? '-' + homeStats.ties : ''}</div></div>
+      </div>
+      <div id="liveStatus" style="text-align:center; padding:8px 18px; background:var(--field-dark); color:var(--ink); font-size:13px; letter-spacing:0.5px;">${statusLabel(g)}</div>
+      <div class="probbar-wrap">
+        <div class="probbar-nums-big">
+          <div><span class="pct away">${awayPctDisplay}%</span><span class="abbr">${away.abbr}</span></div>
+          <div style="text-align:right;"><span class="pct home">${homePctDisplay}%</span><span class="abbr">${home.abbr}</span></div>
+        </div>
+        <div class="probbar"><div class="away" style="width:${awayPctDisplay}%"></div><div class="home" style="width:${homePctDisplay}%"></div></div>
+        <div class="probbar-caption">Chance to win — based on scoring differential, recent form, QB status, rest &amp; travel${priorMeeting ? `<br>Earlier meeting: ${priorMeeting.awayScore}-${priorMeeting.homeScore} (${TEAM_BY_ID.get(priorMeeting.awayId).abbr} @ ${TEAM_BY_ID.get(priorMeeting.homeId).abbr}, Week ${priorMeeting.week})` : ''}</div>
+        <div id="kalshiMovement" style="text-align:center; font-size:11px; color:var(--accent); margin-top:6px;">${kalshiML.available ? `Kalshi line moved ${Math.abs(Math.round(kalshiML.movementDelta * 100))}pt toward ${kalshiML.movementDelta > 0 ? home.abbr : away.abbr} over the last ${kalshiML.movementMinutes} min` : ''}</div>
+      </div>
+
+      <div class="bet-tabs">
+        <button class="bet-tab active" data-panel="panel-moneyline"><span class="glyph">$</span> Moneyline</button>
+        <button class="bet-tab" data-panel="panel-spread"><span class="glyph">⟷</span> Spread</button>
+        <button class="bet-tab" data-panel="panel-total"><span class="glyph">⇅</span> Total</button>
+      </div>
+
+      <div class="bet-panel" id="panel-moneyline">
+        <p class="plain-hint">Pick who wins. Type in the odds from your book to see the implied chance and how it compares to our estimate ("edge") — or pull mock live odds from Kalshi.</p>
+        <button class="log-bet-btn" id="kalshiBtn" style="margin-bottom:12px;">${kalshiML.available ? 'Live from Kalshi ✓' : 'No Kalshi market found for this game'}</button>
+        <div class="odds-row">
+          <div class="odds-field"><label>${away.abbr} odds</label><input type="text" id="awayOdds" placeholder="e.g. +130"></div>
+          <div class="odds-field"><label>${home.abbr} odds</label><input type="text" id="homeOdds" placeholder="e.g. -150"></div>
+        </div>
+        <div id="resultBox"></div>
+      </div>
+
+      <div class="bet-panel" id="panel-spread" style="display:none;">
+        <p class="plain-hint">Pick who covers the spread. We project the score around ${projection.expectedHomePts.toFixed(1)} - ${projection.expectedAwayPts.toFixed(1)} (home).</p>
+        <button class="log-bet-btn" id="kalshiSpreadBtn" style="margin-bottom:12px;">${kalshiSpread.available ? 'Live from Kalshi ✓' : 'No Kalshi spread found for this game'}</button>
+        <div class="odds-row">
+          <div class="odds-field"><label>Line (home side)</label><input type="text" id="spreadNum" value="${favoredSide === 'home' ? '-' : '+'}${defaultSpread}" placeholder="e.g. -2.5"></div>
+          <div class="odds-field"></div>
+        </div>
+        <div class="odds-row">
+          <div class="odds-field"><label>${away.abbr} spread odds</label><input type="text" id="awaySpreadOdds" placeholder="e.g. -110"></div>
+          <div class="odds-field"><label>${home.abbr} spread odds</label><input type="text" id="homeSpreadOdds" placeholder="e.g. -110"></div>
+        </div>
+        <div id="spreadResultBox"></div>
+      </div>
+
+      <div class="bet-panel" id="panel-total" style="display:none;">
+        <p class="plain-hint">Pick whether total points lands over or under a number. We project ${projection.expectedTotal.toFixed(1)} total points${weather.isDome ? ' in a dome' : ''}.</p>
+        <button class="log-bet-btn" id="kalshiTotalBtn" style="margin-bottom:12px;">${kalshiTotal.available ? 'Live from Kalshi ✓' : 'No Kalshi total found for this game'}</button>
+        <div class="odds-row">
+          <div class="odds-field"><label>Total line</label><input type="text" id="totalNum" value="${defaultTotal}" placeholder="e.g. 45.5"></div>
+          <div class="odds-field"></div>
+        </div>
+        <div class="odds-row">
+          <div class="odds-field"><label>Over odds</label><input type="text" id="overOdds" placeholder="e.g. -110"></div>
+          <div class="odds-field"><label>Under odds</label><input type="text" id="underOdds" placeholder="e.g. -110"></div>
+        </div>
+        <div id="totalResultBox"></div>
+      </div>
+
+      <details class="game-details">
+        <summary>Game details — QBs, weather, rest &amp; travel, injuries</summary>
+        <div class="details-inner">
+          <div class="detail-block">
+            <div class="detail-title">Starting quarterbacks</div>
+            <div class="detail-cols">
+              <div>${getQB(g.awayId).fullName} — Rating ${getQB(g.awayId).rating.toFixed(1)}${awayQBStatus !== 'Healthy' ? `<br><span style="color:var(--amber);">${awayQBStatus}</span>` : ''}</div>
+              <div>${getQB(g.homeId).fullName} — Rating ${getQB(g.homeId).rating.toFixed(1)}${homeQBStatus !== 'Healthy' ? `<br><span style="color:var(--amber);">${homeQBStatus}</span>` : ''}</div>
+            </div>
+          </div>
+
+          <div class="detail-block">
+            <div class="detail-title">Stadium &amp; weather</div>
+            <div class="chip-row">
+              <span class="chip">${home.stadium}${home.dome ? ' (dome)' : ''}</span>
+              ${weather.isDome ? '<span class="chip">Roof/dome — no weather effect</span>' : `
+                <span class="chip">${weather.tempF}°F</span>
+                <span class="chip ${weather.windMph >= 15 ? 'chip-out' : ''}">Wind ${weather.windMph} mph</span>
+                ${weather.precip ? '<span class="chip chip-out">🌧 Rain expected</span>' : ''}
+              `}
+            </div>
+          </div>
+
+          <div class="detail-block">
+            <div class="detail-title">Rest &amp; travel</div>
+            <div class="chip-row">
+              <span class="chip ${awayTravel.restDays !== null && awayTravel.restDays <= 4 ? 'chip-out' : ''}">${away.abbr}: ${awayTravel.restDays ?? '—'}d rest, ${awayTravel.miles}mi travel${awayTravel.tzShift ? `, ~${Math.abs(awayTravel.tzShift)}tz` : ''}</span>
+              <span class="chip ${homeTravel.restDays !== null && homeTravel.restDays <= 4 ? 'chip-out' : ''}">${home.abbr}: ${homeTravel.restDays ?? '—'}d rest, home</span>
+            </div>
+          </div>
+
+          <div class="detail-block">
+            <div class="detail-title">Injury report</div>
+            <div class="detail-cols">
+              <div class="chip-row">${getInjuryReport(g.awayId, g.week).map(e => `<span class="chip ${e.status === 'Out' ? 'chip-neg' : 'chip-out'}">${e.pos} ${e.status}</span>`).join('') || '<span style="color:var(--ink-soft);">Nothing notable</span>'}</div>
+              <div class="chip-row">${getInjuryReport(g.homeId, g.week).map(e => `<span class="chip ${e.status === 'Out' ? 'chip-neg' : 'chip-out'}">${e.pos} ${e.status}</span>`).join('') || '<span style="color:var(--ink-soft);">Nothing notable</span>'}</div>
+            </div>
+          </div>
+        </div>
+      </details>
+    </div>
+  `;
+
+  currentMatchup = { gamePk, awayAbbr: away.abbr, homeAbbr: home.abbr, awayName: `${away.city} ${away.name}`, homeName: `${home.city} ${home.name}`, gameDate: g.gameDate };
+
+  el.querySelectorAll('.bet-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      el.querySelectorAll('.bet-tab').forEach(t => t.classList.remove('active'));
+      el.querySelectorAll('.bet-panel').forEach(p => p.style.display = 'none');
+      tab.classList.add('active');
+      document.getElementById(tab.dataset.panel).style.display = '';
+    });
+  });
+
+  const awayInput = document.getElementById('awayOdds'), homeInput = document.getElementById('homeOdds');
+  const computeML = () => computeEdge(awayInput.value, homeInput.value, awayWinProb, homeWinProb, away.abbr, home.abbr);
+  awayInput.addEventListener('input', computeML); homeInput.addEventListener('input', computeML);
+  if (kalshiML.available) {
+    const homeProb = kalshiML.yesTeam === home.abbr ? kalshiML.yesProb : 1 - kalshiML.yesProb;
+    const awayProb = 1 - homeProb;
+    const hOdds = probToAmerican(homeProb), aOdds = probToAmerican(awayProb);
+    homeInput.value = hOdds > 0 ? `+${hOdds}` : `${hOdds}`;
+    awayInput.value = aOdds > 0 ? `+${aOdds}` : `${aOdds}`;
+    computeML();
+  }
+  document.getElementById('kalshiBtn').addEventListener('click', () => {
+    const k = mockKalshiMoneyline(g, homeWinProb, true);
+    const btn = document.getElementById('kalshiBtn');
+    if (!k.available) { btn.textContent = 'No Kalshi market found for this game'; return; }
+    const homeProb = k.yesTeam === home.abbr ? k.yesProb : 1 - k.yesProb;
+    const awayProb = 1 - homeProb;
+    const hOdds = probToAmerican(homeProb), aOdds = probToAmerican(awayProb);
+    homeInput.value = hOdds > 0 ? `+${hOdds}` : `${hOdds}`;
+    awayInput.value = aOdds > 0 ? `+${aOdds}` : `${aOdds}`;
+    computeML();
+    btn.textContent = 'Updated from Kalshi ✓';
+  });
+
+  const spreadNumInput = document.getElementById('spreadNum');
+  const awaySpreadInput = document.getElementById('awaySpreadOdds'), homeSpreadInput = document.getElementById('homeSpreadOdds');
+  const computeSpread = () => {
+    const lineVal = parseFloat(spreadNumInput.value);
+    if (isNaN(lineVal)) { document.getElementById('spreadResultBox').innerHTML = ''; return; }
+    const probs = spreadProbs(projection, lineVal);
+    computeSpreadEdge(awaySpreadInput.value, homeSpreadInput.value, probs, away.abbr, home.abbr, lineVal);
+  };
+  spreadNumInput.addEventListener('input', computeSpread);
+  awaySpreadInput.addEventListener('input', computeSpread); homeSpreadInput.addEventListener('input', computeSpread);
+  if (kalshiSpread.available) {
+    const line = kalshiSpread.lines[0];
+    const homeIsFavored = line.favoredTeam === home.abbr;
+    const homeVal = homeIsFavored ? -line.line : line.line;
+    spreadNumInput.value = homeVal;
+    const homeProb = homeIsFavored ? line.yesProb : 1 - line.yesProb;
+    const hOdds = probToAmerican(homeProb), aOdds = probToAmerican(1 - homeProb);
+    homeSpreadInput.value = hOdds > 0 ? `+${hOdds}` : `${hOdds}`;
+    awaySpreadInput.value = aOdds > 0 ? `+${aOdds}` : `${aOdds}`;
+    computeSpread();
+  }
+  document.getElementById('kalshiSpreadBtn').addEventListener('click', () => {
+    const k = mockKalshiSpread(g, projection, true);
+    const btn = document.getElementById('kalshiSpreadBtn');
+    if (!k.available) { btn.textContent = 'No Kalshi spread found for this game'; return; }
+    const line = k.lines[0];
+    const homeIsFavored = line.favoredTeam === home.abbr;
+    spreadNumInput.value = homeIsFavored ? -line.line : line.line;
+    const homeProb = homeIsFavored ? line.yesProb : 1 - line.yesProb;
+    const hOdds = probToAmerican(homeProb), aOdds = probToAmerican(1 - homeProb);
+    homeSpreadInput.value = hOdds > 0 ? `+${hOdds}` : `${hOdds}`;
+    awaySpreadInput.value = aOdds > 0 ? `+${aOdds}` : `${aOdds}`;
+    computeSpread();
+    btn.textContent = 'Updated from Kalshi ✓';
+  });
+
+  const totalNumInput = document.getElementById('totalNum');
+  const overInput = document.getElementById('overOdds'), underInput = document.getElementById('underOdds');
+  const computeTotal = () => {
+    const totalVal = parseFloat(totalNumInput.value);
+    if (isNaN(totalVal)) { document.getElementById('totalResultBox').innerHTML = ''; return; }
+    computeTotalEdge(overInput.value, underInput.value, totalProbs(projection, totalVal), totalVal);
+  };
+  totalNumInput.addEventListener('input', computeTotal);
+  overInput.addEventListener('input', computeTotal); underInput.addEventListener('input', computeTotal);
+  if (kalshiTotal.available) {
+    const line = kalshiTotal.lines[0];
+    const oOdds = probToAmerican(line.overProb), uOdds = probToAmerican(1 - line.overProb);
+    totalNumInput.value = line.line;
+    overInput.value = oOdds > 0 ? `+${oOdds}` : `${oOdds}`;
+    underInput.value = uOdds > 0 ? `+${uOdds}` : `${uOdds}`;
+    computeTotal();
+  }
+  document.getElementById('kalshiTotalBtn').addEventListener('click', () => {
+    const k = mockKalshiTotal(g, projection, true);
+    const btn = document.getElementById('kalshiTotalBtn');
+    if (!k.available) { btn.textContent = 'No Kalshi total found for this game'; return; }
+    const line = k.lines[0];
+    const oOdds = probToAmerican(line.overProb), uOdds = probToAmerican(1 - line.overProb);
+    totalNumInput.value = line.line;
+    overInput.value = oOdds > 0 ? `+${oOdds}` : `${oOdds}`;
+    underInput.value = uOdds > 0 ? `+${uOdds}` : `${uOdds}`;
+    computeTotal();
+    btn.textContent = 'Updated from Kalshi ✓';
+  });
+}
+
+function colHTML(label, implied, modelProb, side, betType) {
+  if (implied === null) return `<div class="col"><div class="team-abbr">${label}</div><div class="implied">—</div></div>`;
+  const edge = (modelProb - implied) * 100;
+  const edgeClass = edge > 0 ? 'edge-pos' : (edge < 0 ? 'edge-neg' : '');
+  const edgeText = edge > 0 ? `+${edge.toFixed(1)}% model edge` : `${edge.toFixed(1)}% vs model`;
+  const edgeSpanClass = edge > 0 ? 'pos' : 'neg';
+  return `<div class="col ${edgeClass}">
+    <div class="team-abbr">${label}</div>
+    <div class="implied">${(implied * 100).toFixed(1)}%</div>
+    <div class="edge ${edgeSpanClass}">${edgeText}</div>
+    <button class="log-bet-btn" onclick="logBet('${betType}','${side}')">Log bet</button>
+  </div>`;
+}
+function computeEdge(awayOddsStr, homeOddsStr, awayModelProb, homeModelProb, awayAbbr, homeAbbr) {
+  const box = document.getElementById('resultBox');
+  const awayImplied = americanToImplied(awayOddsStr), homeImplied = americanToImplied(homeOddsStr);
+  lastEdgeState = { awayAbbr, homeAbbr, awayOddsStr, homeOddsStr, awayImplied, homeImplied, awayModelProb, homeModelProb };
+  if (awayImplied === null && homeImplied === null) { box.innerHTML = ''; return; }
+  box.innerHTML = `<div class="result">${colHTML(awayAbbr, awayImplied, awayModelProb, 'away', 'moneyline')}${colHTML(homeAbbr, homeImplied, homeModelProb, 'home', 'moneyline')}</div>`;
+}
+function computeSpreadEdge(awayOddsStr, homeOddsStr, probs, awayAbbr, homeAbbr, lineVal) {
+  const box = document.getElementById('spreadResultBox');
+  const awayImplied = americanToImplied(awayOddsStr), homeImplied = americanToImplied(homeOddsStr);
+  lastSpreadState = { awayAbbr, homeAbbr, lineVal, awayOddsStr, homeOddsStr, awayImplied, homeImplied, awayModelProb: probs ? probs.away : null, homeModelProb: probs ? probs.home : null };
+  if (!probs || (awayImplied === null && homeImplied === null)) { box.innerHTML = ''; return; }
+  const homeLabel = lineVal >= 0 ? `${homeAbbr} +${Math.abs(lineVal)}` : `${homeAbbr} -${Math.abs(lineVal)}`;
+  const awayLabel = lineVal >= 0 ? `${awayAbbr} -${Math.abs(lineVal)}` : `${awayAbbr} +${Math.abs(lineVal)}`;
+  box.innerHTML = `<div class="result">${colHTML(awayLabel, awayImplied, probs.away, 'away', 'spread')}${colHTML(homeLabel, homeImplied, probs.home, 'home', 'spread')}</div>`;
+}
+function computeTotalEdge(overOddsStr, underOddsStr, probs, totalVal) {
+  const box = document.getElementById('totalResultBox');
+  const overImplied = americanToImplied(overOddsStr), underImplied = americanToImplied(underOddsStr);
+  lastTotalState = { totalVal, overOddsStr, underOddsStr, overImplied, underImplied, overModelProb: probs ? probs.over : null, underModelProb: probs ? probs.under : null };
+  if (!probs || (overImplied === null && underImplied === null)) { box.innerHTML = ''; return; }
+  box.innerHTML = `<div class="result">${colHTML(`Over ${totalVal}`, overImplied, probs.over, 'over', 'total')}${colHTML(`Under ${totalVal}`, underImplied, probs.under, 'under', 'total')}</div>`;
+}
+
+document.getElementById('prevWeek').addEventListener('click', () => { currentWeek = Math.max(1, currentWeek - 1); loadGames(); });
+document.getElementById('nextWeek').addEventListener('click', () => { currentWeek = Math.min(TOTAL_WEEKS, currentWeek + 1); loadGames(); });
+
+/* ============================== Bet tracking ============================== */
+const BETS_KEY = 'gridironBets';
+function loadBets() { try { return JSON.parse(localStorage.getItem(BETS_KEY)) || []; } catch (e) { return []; } }
+function saveBets(bets) { localStorage.setItem(BETS_KEY, JSON.stringify(bets)); }
+
+function logBet(betType, side) {
+  if (!currentMatchup) return;
+  let oddsStr, modelProb, label, line = null;
+  if (betType === 'moneyline') {
+    if (!lastEdgeState) return;
+    const isAway = side === 'away';
+    oddsStr = isAway ? lastEdgeState.awayOddsStr : lastEdgeState.homeOddsStr;
+    modelProb = isAway ? lastEdgeState.awayModelProb : lastEdgeState.homeModelProb;
+    label = isAway ? `${currentMatchup.awayName} ML` : `${currentMatchup.homeName} ML`;
+  } else if (betType === 'spread') {
+    if (!lastSpreadState) return;
+    const isAway = side === 'away';
+    oddsStr = isAway ? lastSpreadState.awayOddsStr : lastSpreadState.homeOddsStr;
+    modelProb = isAway ? lastSpreadState.awayModelProb : lastSpreadState.homeModelProb;
+    line = lastSpreadState.lineVal;
+    label = isAway
+      ? `${currentMatchup.awayName} ${line >= 0 ? '-' : '+'}${Math.abs(line)}`
+      : `${currentMatchup.homeName} ${line >= 0 ? '+' : '-'}${Math.abs(line)}`;
+  } else if (betType === 'total') {
+    if (!lastTotalState) return;
+    const isOver = side === 'over';
+    oddsStr = isOver ? lastTotalState.overOddsStr : lastTotalState.underOddsStr;
+    modelProb = isOver ? lastTotalState.overModelProb : lastTotalState.underModelProb;
+    line = lastTotalState.totalVal;
+    label = `${isOver ? 'Over' : 'Under'} ${lastTotalState.totalVal}`;
+  } else return;
+  if (!oddsStr || modelProb === null || modelProb === undefined) return;
+
+  const bets = loadBets();
+  bets.unshift({
+    id: `${currentMatchup.gamePk}-${betType}-${side}-${Date.now()}`,
+    gamePk: currentMatchup.gamePk, matchup: `${currentMatchup.awayAbbr} @ ${currentMatchup.homeAbbr}`,
+    betType, side, line, awayAbbr: currentMatchup.awayAbbr, homeAbbr: currentMatchup.homeAbbr,
+    team: label, abbr: label, odds: oddsStr, modelProb, loggedAt: new Date().toISOString(),
+    gameDate: currentMatchup.gameDate, result: null
+  });
+  saveBets(bets);
+
+  const boxId = betType === 'moneyline' ? 'resultBox' : (betType === 'spread' ? 'spreadResultBox' : 'totalResultBox');
+  const note = document.createElement('div');
+  note.style.cssText = 'text-align:center;font-size:12px;color:var(--field-light);margin-top:8px;';
+  note.textContent = `Logged: ${label} at ${oddsStr}`;
+  document.getElementById(boxId).appendChild(note);
+}
+function setBetResult(id, result) { const bets = loadBets(); const b = bets.find(x => x.id === id); if (b) b.result = result; saveBets(bets); renderBetsView(); }
+function deleteBet(id) { saveBets(loadBets().filter(b => b.id !== id)); renderBetsView(); }
+
+function gradeSinglePick(pick) {
+  const g = GAME_LOOKUP.get(pick.gamePk);
+  if (!g || g.state !== 'Final') return null;
+  const homeScore = g.homeScore, awayScore = g.awayScore;
+  if (pick.betType === 'moneyline') {
+    if (pick.side === 'home') return homeScore > awayScore;
+    if (pick.side === 'away') return awayScore > homeScore;
+  }
+  if (pick.betType === 'spread') {
+    if (pick.line == null) return null;
+    const homeMargin = homeScore - awayScore;
+    if (pick.side === 'home') return homeMargin > pick.line;
+    if (pick.side === 'away') return homeMargin < pick.line;
+  }
+  if (pick.betType === 'total') {
+    if (pick.line == null) return null;
+    const total = homeScore + awayScore;
+    if (pick.side === 'over') return total > pick.line;
+    if (pick.side === 'under') return total < pick.line;
+  }
+  return null;
+}
+function autoGradeBets() {
+  const bets = loadBets();
+  let changed = false;
+  bets.forEach(b => {
+    if (b.result === 'won' || b.result === 'lost') return;
+    if (b.legs) {
+      let anyLost = false, allDecided = true;
+      for (const l of b.legs) {
+        const outcome = gradeSinglePick(l);
+        if (outcome === false) { anyLost = true; break; }
+        if (outcome === null) allDecided = false;
+      }
+      if (anyLost) { b.result = 'lost'; changed = true; }
+      else if (allDecided) { b.result = 'won'; changed = true; }
+    } else {
+      const outcome = gradeSinglePick(b);
+      if (outcome === true) { b.result = 'won'; changed = true; }
+      else if (outcome === false) { b.result = 'lost'; changed = true; }
+    }
+  });
+  if (changed) saveBets(bets);
+  return changed;
+}
+
+function renderBetsView() {
+  const view = document.getElementById('betsView');
+  const bets = loadBets();
+  const decided = bets.filter(b => b.result === 'won' || b.result === 'lost');
+  const pending = bets.filter(b => b.result !== 'won' && b.result !== 'lost');
+  const wins = decided.filter(b => b.result === 'won').length;
+  const record = decided.length ? `${wins}-${decided.length - wins}` : '—';
+  let calibrationText = '—';
+  if (decided.length >= 3) {
+    const avgModelProb = decided.reduce((sum, b) => sum + b.modelProb, 0) / decided.length;
+    calibrationText = `${(avgModelProb * 100).toFixed(0)}% vs ${((wins / decided.length) * 100).toFixed(0)}%`;
+  }
+  function betCardHTML(b) {
+    const resultClass = b.result === 'won' ? 'result-won' : (b.result === 'lost' ? 'result-lost' : '');
+    return `<div class="bet-card ${resultClass}">
+      <div class="bet-top"><span>${b.abbr} · ${b.matchup}</span><span>${b.odds}</span></div>
+      ${b.legs ? `<div class="bet-meta">${b.legs.map(l => `${l.label} (${(l.prob * 100).toFixed(0)}%)`).join(' + ')}</div>` : ''}
+      <div class="bet-meta">Model had it at ${(b.modelProb * 100).toFixed(1)}% · logged ${new Date(b.loggedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</div>
+      <div class="bet-actions">
+        <button class="won" onclick="setBetResult('${b.id}','won')">${b.result === 'won' ? '✓ Won' : 'Won'}</button>
+        <button class="lost" onclick="setBetResult('${b.id}','lost')">${b.result === 'lost' ? '✓ Lost' : 'Lost'}</button>
+      </div>
+      <button class="delete-bet" onclick="deleteBet('${b.id}')">Remove</button>
+    </div>`;
+  }
+  let html = `<div class="bets-summary">
+    <div><div class="stat-num">${bets.length}</div><div class="stat-label">Logged</div></div>
+    <div><div class="stat-num">${record}</div><div class="stat-label">Record</div></div>
+    <div><div class="stat-num">${calibrationText}</div><div class="stat-label">Model % vs Actual</div></div>
+  </div>`;
+  if (!bets.length) {
+    html += `<div class="status">No bets logged yet. Tap "Log bet" next to an odds comparison on a game to start tracking.</div>`;
+  } else {
+    if (pending.length) { html += `<div class="parlay-section-title">Pending</div>` + pending.map(betCardHTML).join(''); }
+    html += `<div class="parlay-section-title">History${decided.length ? ` (${record})` : ''}</div>`;
+    html += decided.length ? decided.map(betCardHTML).join('') : `<div class="status">No settled bets yet — mark a pending bet Won or Lost once its game finishes.</div>`;
+  }
+  view.innerHTML = html;
+}
+
+/* ============================== Parlay finder ============================== */
+function combinations(arr, k) {
+  const results = [];
+  function helper(start, combo) {
+    if (combo.length === k) { results.push(combo.slice()); return; }
+    for (let i = start; i < arr.length; i++) { combo.push(arr[i]); helper(i + 1, combo); combo.pop(); }
+  }
+  helper(0, []);
+  return results;
+}
+function loadParlayFinder() {
+  const view = document.getElementById('parlaysView');
+  const upcoming = GAMES_BY_WEEK.get(currentWeek).filter(g => g.state === 'Preview');
+  if (!upcoming.length) { view.innerHTML = '<div class="status">No upcoming games this week to build parlays from.</div>'; return; }
+
+  const legs = [];
+  upcoming.forEach(g => {
+    const away = TEAM_BY_ID.get(g.awayId), home = TEAM_BY_ID.get(g.homeId);
+    const standings = computeStandingsThroughWeek(g.week);
+    const awayStats = standings.get(g.awayId), homeStats = standings.get(g.homeId);
+    const matchupLabel = `${away.abbr} @ ${home.abbr}`;
+    const legBase = { gamePk: g.gamePk, matchup: matchupLabel, gameDate: g.gameDate };
+
+    const { homeWinProb, awayWinProb } = computeBaseWinProb(awayStats, homeStats);
+    if (homeWinProb >= awayWinProb) legs.push({ ...legBase, betType: 'moneyline', side: 'home', label: `${home.abbr} ML`, prob: homeWinProb });
+    else legs.push({ ...legBase, betType: 'moneyline', side: 'away', label: `${away.abbr} ML`, prob: awayWinProb });
+
+    const projection = projectPoints(awayStats, homeStats);
+    const spreadLine = Math.round(Math.abs(projection.expectedMargin) * 2) / 2 || 2.5;
+    const spProbs = spreadProbs(projection, projection.expectedMargin >= 0 ? spreadLine : -spreadLine);
+    if (spProbs) {
+      if (spProbs.home >= spProbs.away) legs.push({ ...legBase, betType: 'spread', side: 'home', line: spreadLine, label: `${home.abbr} -${spreadLine}`, prob: spProbs.home });
+      else legs.push({ ...legBase, betType: 'spread', side: 'away', line: spreadLine, label: `${away.abbr} +${spreadLine}`, prob: spProbs.away });
+    }
+    const totalLine = Math.round(projection.expectedTotal * 2) / 2;
+    const totProbs = totalProbs(projection, totalLine);
+    if (totProbs) {
+      if (totProbs.over >= totProbs.under) legs.push({ ...legBase, betType: 'total', side: 'over', line: totalLine, label: `Over ${totalLine}`, prob: totProbs.over });
+      else legs.push({ ...legBase, betType: 'total', side: 'under', line: totalLine, label: `Under ${totalLine}`, prob: totProbs.under });
+    }
+  });
+
+  function buildTopParlays(legCount, topN) {
+    return combinations(legs, legCount)
+      .filter(combo => new Set(combo.map(l => l.gamePk)).size === combo.length)
+      .map(combo => ({ legs: combo, combinedProb: combo.reduce((p, l) => p * l.prob, 1) }))
+      .sort((a, b) => b.combinedProb - a.combinedProb)
+      .slice(0, topN);
+  }
+  const twoLeg = buildTopParlays(2, 8), threeLeg = buildTopParlays(3, 8);
+  function parlayCardHTML(p, idx) {
+    const fairOdds = probToAmerican(p.combinedProb);
+    const fairOddsStr = fairOdds > 0 ? `+${fairOdds}` : `${fairOdds}`;
+    return `<div class="parlay-card">
+      <div class="parlay-legs">${p.legs.map(l => `<div class="parlay-leg"><span>${l.label} <span style="color:var(--ink-soft);">(${l.matchup})</span></span><span class="leg-prob">${(l.prob * 100).toFixed(0)}%</span></div>`).join('')}</div>
+      <div class="parlay-footer">
+        <div><div class="parlay-combined">${(p.combinedProb * 100).toFixed(1)}%</div><div class="parlay-fairodds">fair odds ~${fairOddsStr}</div></div>
+        <button class="log-bet-btn" style="width:auto; padding:8px 14px;" onclick="logParlay(${idx}, ${p.legs.length})">Log this parlay</button>
+      </div>
+    </div>`;
+  }
+  window._parlayCache = { twoLeg, threeLeg };
+  view.innerHTML = `
+    <div class="status" style="padding:14px 18px; text-align:left;">
+      Ranked by combined probability across ${upcoming.length} upcoming games this week. Independent games only — legs never share a game.
+    </div>
+    <div class="parlay-section-title">Top 2-leg parlays</div>
+    ${twoLeg.map((p, i) => parlayCardHTML(p, i)).join('') || '<div class="status">No valid 2-leg combos found.</div>'}
+    <div class="parlay-section-title">Top 3-leg parlays</div>
+    ${threeLeg.map((p, i) => parlayCardHTML(p, i)).join('') || '<div class="status">No valid 3-leg combos found.</div>'}
+  `;
+}
+function logParlay(idx, legCount) {
+  const cache = window._parlayCache;
+  if (!cache) return;
+  const p = legCount === 2 ? cache.twoLeg[idx] : cache.threeLeg[idx];
+  if (!p) return;
+  const bets = loadBets();
+  bets.unshift({
+    id: `parlay-${Date.now()}`, gamePk: null, matchup: p.legs.map(l => l.matchup).join(' / '),
+    betType: 'parlay', team: `${legCount}-leg parlay`, abbr: `${legCount}-leg parlay`,
+    odds: (() => { const o = probToAmerican(p.combinedProb); return o > 0 ? `+${o}` : `${o}`; })(),
+    modelProb: p.combinedProb, legs: p.legs, loggedAt: new Date().toISOString(), gameDate: null, result: null
+  });
+  saveBets(bets);
+}
+
+/* ============================== Backtest ============================== */
+function renderBacktestView() {
+  const view = document.getElementById('backtestView');
+  if (view.dataset.rendered === 'true') return;
+  const maxPastWeek = Math.max(1, MOCK_CURRENT_WEEK - 1);
+  view.innerHTML = `
+    <div class="status" style="padding:14px 18px; text-align:left;">
+      Tests the moneyline blend — record, Pythagorean win expectation, home/away splits, and recent form —
+      against the sample season's completed games, using standings exactly as they stood entering each week
+      (not final-season stats, which would be cheating). Only weeks before the current mock week have results to test.
+    </div>
+    <div style="padding: 0 18px 14px; display:flex; gap:10px; align-items:flex-end;">
+      <div style="flex:1;">
+        <label style="display:block; font-size:11px; color:var(--ink-soft); margin-bottom:4px;">Start week</label>
+        <select id="btStart" style="width:100%; padding:8px; border-radius:6px; border:1px solid var(--line); background:var(--chalk); color:var(--ink); font-family:inherit;"></select>
+      </div>
+      <div style="flex:1;">
+        <label style="display:block; font-size:11px; color:var(--ink-soft); margin-bottom:4px;">End week</label>
+        <select id="btEnd" style="width:100%; padding:8px; border-radius:6px; border:1px solid var(--line); background:var(--chalk); color:var(--ink); font-family:inherit;"></select>
+      </div>
+    </div>
+    <div style="padding: 0 18px 14px;"><button class="log-bet-btn" id="btRunBtn" style="width:100%;">Run backtest</button></div>
+    <div id="btResults"></div>
+  `;
+  const startSel = document.getElementById('btStart'), endSel = document.getElementById('btEnd');
+  for (let w = 1; w <= maxPastWeek; w++) {
+    startSel.innerHTML += `<option value="${w}" ${w === 1 ? 'selected' : ''}>Week ${w}</option>`;
+    endSel.innerHTML += `<option value="${w}" ${w === maxPastWeek ? 'selected' : ''}>Week ${w}</option>`;
+  }
+  view.dataset.rendered = 'true';
+  document.getElementById('btRunBtn').addEventListener('click', runBacktest);
+}
+function runBacktest() {
+  const startWeek = parseInt(document.getElementById('btStart').value);
+  const endWeek = parseInt(document.getElementById('btEnd').value);
+  const resultsEl = document.getElementById('btResults');
+  if (startWeek > endWeek) { resultsEl.innerHTML = `<div class="error-box">Start week must be before end week.</div>`; return; }
+
+  const predictions = [];
+  for (let w = startWeek; w <= endWeek; w++) {
+    const standings = computeStandingsThroughWeek(w);
+    GAMES_BY_WEEK.get(w).filter(g => g.state === 'Final').forEach(g => {
+      const awayStats = standings.get(g.awayId), homeStats = standings.get(g.homeId);
+      const { homeWinProb } = computeBaseWinProb(awayStats, homeStats);
+      predictions.push({ predictedHomeProb: homeWinProb, homeWon: g.homeScore > g.awayScore });
+    });
+  }
+  if (!predictions.length) { resultsEl.innerHTML = `<div class="error-box">No completed games in that range.</div>`; return; }
+
+  const buckets = {};
+  let brierSum = 0;
+  predictions.forEach(p => {
+    const favoredProb = p.predictedHomeProb >= 0.5 ? p.predictedHomeProb : 1 - p.predictedHomeProb;
+    const favoredWon = p.predictedHomeProb >= 0.5 ? p.homeWon : !p.homeWon;
+    const bucketKey = Math.min(95, Math.floor(favoredProb * 20) * 5);
+    if (!buckets[bucketKey]) buckets[bucketKey] = { n: 0, wins: 0 };
+    buckets[bucketKey].n++;
+    if (favoredWon) buckets[bucketKey].wins++;
+    brierSum += Math.pow(p.predictedHomeProb - (p.homeWon ? 1 : 0), 2);
+  });
+  const brierScore = brierSum / predictions.length;
+  const bucketKeys = Object.keys(buckets).map(Number).sort((a, b) => a - b);
+  const rows = bucketKeys.map(k => {
+    const b = buckets[k];
+    const actualPct = (b.wins / b.n) * 100;
+    const diffClass = Math.abs(actualPct - (k + 2.5)) <= 5 ? 'pos' : 'neg';
+    return `<div class="parlay-leg" style="padding:8px 0; border-bottom:1px solid var(--line);">
+      <span>${k}-${k + 5}% predicted (n=${b.n})</span>
+      <span class="leg-prob" style="color:${diffClass === 'pos' ? 'var(--field-light)' : 'var(--neg)'};">${actualPct.toFixed(1)}% actual</span>
+    </div>`;
+  }).join('');
+  resultsEl.innerHTML = `
+    <div class="bets-summary">
+      <div><div class="stat-num">${predictions.length}</div><div class="stat-label">Games tested</div></div>
+      <div><div class="stat-num">${brierScore.toFixed(3)}</div><div class="stat-label">Brier score</div></div>
+      <div><div class="stat-num">${endWeek - startWeek + 1}</div><div class="stat-label">Weeks covered</div></div>
+    </div>
+    <div class="parlay-section-title">Calibration — predicted vs. actual</div>
+    <div class="parlay-card">
+      ${rows}
+      <div style="font-size:10.5px; color:var(--ink-soft); margin-top:10px; line-height:1.5;">
+        Each row groups games by how confident the model was in the favorite, then checks how often the favorite actually won.
+        Well-calibrated means these numbers stay close — e.g. "70-75% predicted" games should see the favorite win roughly
+        70-75% of the time. Brier score measures overall accuracy (0 = perfect, 0.25 = coin-flip guessing, lower is better).
+      </div>
+    </div>
+  `;
+}
+
+/* ============================== Tabs ============================== */
+function showTab(tabName) {
+  const tabs = { games: 'tabGames', parlays: 'tabParlays', bets: 'tabBets', backtest: 'tabBacktest' };
+  const views = { games: 'gamesView', parlays: 'parlaysView', bets: 'betsView', backtest: 'backtestView' };
+  Object.keys(tabs).forEach(key => {
+    document.getElementById(tabs[key]).classList.toggle('active', key === tabName);
+    document.getElementById(views[key]).style.display = key === tabName ? '' : 'none';
+  });
+  document.getElementById('weekbarEl').style.display = tabName === 'games' ? '' : 'none';
+  if (tabName === 'bets') { renderBetsView(); if (autoGradeBets()) renderBetsView(); }
+  if (tabName === 'parlays') loadParlayFinder();
+  if (tabName === 'backtest') renderBacktestView();
+}
+document.getElementById('tabGames').addEventListener('click', () => showTab('games'));
+document.getElementById('tabParlays').addEventListener('click', () => showTab('parlays'));
+document.getElementById('tabBets').addEventListener('click', () => showTab('bets'));
+document.getElementById('tabBacktest').addEventListener('click', () => showTab('backtest'));
+
+loadGames();
+</script>
+</body>
+</html>
