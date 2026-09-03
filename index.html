@@ -83,15 +83,13 @@
   .game-row .divider-col { height: 1px; width: 100%; background: var(--line); }
   .game-row .matchup-stack { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
   .game-row .matchup-time { font-size: 10px; font-weight: 700; color: var(--ink); margin-bottom: 1px; display: flex; align-items: center; gap: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .qb-line { display: flex; align-items: center; gap: 4px; }
-  .qb-avatar {
-    width: 14px; height: 14px; border-radius: 50%; flex-shrink: 0; background: var(--chalk); border: 1px solid var(--line);
-    display: flex; align-items: center; justify-content: center; font-size: 6px; font-weight: 700; color: var(--ink-soft);
-  }
-  .qb-info { font-size: 8.5px; line-height: 1.2; min-width: 0; }
-  .qb-info .q-name { color: var(--ink); font-weight: 600; display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
-  .qb-info .q-flag { color: var(--amber); font-weight: 700; }
-  .qb-info .q-stats { color: var(--ink-soft); }
+  .mini-prob { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; }
+  .mini-prob-bar { height: 5px; border-radius: 4px; overflow: hidden; display: flex; background: var(--line); }
+  .mini-prob-bar .away { background: linear-gradient(90deg, var(--dirt-light), var(--dirt)); }
+  .mini-prob-bar .home { background: linear-gradient(90deg, var(--field), var(--field-light)); }
+  .mini-prob-nums { display: flex; justify-content: space-between; font-size: 9px; font-weight: 700; white-space: nowrap; }
+  .mini-prob-nums .away-pct { color: var(--dirt-light); }
+  .mini-prob-nums .home-pct { color: var(--field-light); }
   .live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--neg); animation: pulse 1.6s infinite; display: inline-block; }
   @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
   .matchup { background: var(--card); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; box-shadow: 0 2px 10px rgba(28,38,32,0.08); }
@@ -198,8 +196,7 @@
     .game-row .team-name { font-size: 13px; }
     .game-row .team-record { font-size: 11px; }
     .game-row .matchup-time { font-size: 12.5px; }
-    .qb-avatar { width: 20px; height: 20px; font-size: 8px; }
-    .qb-info { font-size: 11px; }
+    .mini-prob-nums { font-size: 11px; }
     .matchup { max-width: 640px; margin: 0 auto; }
     .bet-card, .parlay-card { max-width: 640px; margin-left: auto; margin-right: auto; }
     header, .tabbar, .datebar { padding-left: 32px; padding-right: 32px; }
@@ -514,6 +511,46 @@ function computeBaseWinProb(awayStats, homeStats, awayTeamId, homeTeamId) {
   let homeWinProb = applyShrinkage(log5(homePct, awayPct), MONEYLINE_SHRINKAGE);
   homeWinProb = Math.min(0.97, Math.max(0.03, homeWinProb + HOME_FIELD_EDGE));
   return { homeWinProb, awayWinProb: 1 - homeWinProb };
+}
+
+// Rest & travel — pure math off the schedule we already have, no fetch required, so this can be
+// applied everywhere (including the compact game-card mini bar) without any extra network cost.
+function getRestDays(teamId, game) {
+  const prior = ALL_GAMES.filter(x => (x.homeId === teamId || x.awayId === teamId) && new Date(x.gameDate) < new Date(game.gameDate))
+    .sort((a, b) => new Date(b.gameDate) - new Date(a.gameDate))[0];
+  if (!prior) return null;
+  return Math.round((new Date(game.gameDate) - new Date(prior.gameDate)) / 86400000);
+}
+function haversineMiles(lat1, lon1, lat2, lon2) {
+  const toRad = d => d * Math.PI / 180, R = 3958.8;
+  const dLat = toRad(lat2 - lat1), dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return Math.round(R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
+}
+function tzBucket(lon) { if (lon >= -85) return -5; if (lon >= -100) return -6; if (lon >= -111) return -7; return -8; }
+function travelContext(teamId, game) {
+  const homeTeam = TEAM_BY_ID.get(game.homeId);
+  if (teamId === game.homeId) return { miles: 0, tzShift: 0, restDays: getRestDays(teamId, game) };
+  const team = TEAM_BY_ID.get(teamId);
+  return { miles: haversineMiles(team.lat, team.lon, homeTeam.lat, homeTeam.lon), tzShift: tzBucket(homeTeam.lon) - tzBucket(team.lon), restDays: getRestDays(teamId, game) };
+}
+function restShift(t) {
+  if (t.restDays === null) return 0;
+  if (t.restDays <= 4) return -0.03;
+  if (t.restDays >= 10) return 0.02;
+  return 0;
+}
+function applyRestTravelAdjustment(homeWinProb, game) {
+  const awayTravel = travelContext(game.awayId, game), homeTravel = travelContext(game.homeId, game);
+  let p = homeWinProb - restShift(awayTravel) + restShift(homeTravel);
+  if (awayTravel.miles > 1500) p += 0.02;
+  return { homeWinProb: Math.min(0.97, Math.max(0.03, p)), awayTravel, homeTravel };
+}
+function applyQBAdjustment(homeWinProb, awaySeverity, homeSeverity) {
+  let p = homeWinProb;
+  if (awaySeverity === 'Out') p = Math.min(0.97, p + 0.10);
+  if (homeSeverity === 'Out') p = Math.max(0.03, p - 0.10);
+  return p;
 }
 
 /* ============================== QB (sample fallback + live via ESPN depth chart) ============================== */
@@ -1013,33 +1050,20 @@ function initials(fullName) {
   const parts = fullName.trim().split(' ');
   return parts.length > 1 ? (parts[0][0] + parts[parts.length - 1][0]).toUpperCase() : fullName.slice(0, 2).toUpperCase();
 }
-function qbInfoInner(shortName, statusWord, flagHtml) {
-  return `<span class="q-name">${shortName}</span>${flagHtml || ''}<br><span class="q-stats">${statusWord}</span>`;
-}
-function qbFlagHtml(severity) {
-  if (severity === 'Out') return `<span class="q-flag"> (OUT)</span>`;
-  if (severity === 'Questionable') return `<span class="q-flag"> (Q)</span>`;
-  return '';
-}
-function qbLineHTML(teamId, week, avatarId, infoId) {
-  const qb = getQBSample(teamId);
-  const severity = getQBStatusSample(teamId, week);
+function miniProbHTML(awayProb, homeProb, awayAbbr, homeAbbr, barId, numsId) {
+  const awayPct = Math.round(awayProb * 100), homePct = 100 - awayPct;
   return `
-    <div class="qb-line">
-      <span class="qb-avatar" id="${avatarId}">${initials(qb.fullName)}</span>
-      <span class="qb-info" id="${infoId}">${qbInfoInner(qb.name, 'Sample', qbFlagHtml(severity))}</span>
+    <div class="mini-prob">
+      <div class="mini-prob-bar" id="${barId}"><div class="away" style="width:${awayPct}%"></div><div class="home" style="width:${homePct}%"></div></div>
+      <div class="mini-prob-nums" id="${numsId}"><span class="away-pct">${awayAbbr} ${awayPct}%</span><span class="home-pct">${homePct}% ${homeAbbr}</span></div>
     </div>
   `;
 }
-function patchQBLine(avatarId, infoId, teamId) {
-  fetchLiveQB(teamId).then(live => {
-    if (!live) return;
-    const infoEl = document.getElementById(infoId);
-    const avatarEl = document.getElementById(avatarId);
-    const shortName = live.fullName.split(' ').length > 1 ? `${live.fullName[0]}. ${live.fullName.split(' ').slice(-1)[0]}` : live.fullName;
-    if (infoEl) infoEl.innerHTML = qbInfoInner(shortName, live.statusName, qbFlagHtml(live.severity));
-    if (avatarEl) avatarEl.textContent = initials(live.fullName);
-  });
+function patchMiniProb(barId, numsId, awayProb, homeProb, awayAbbr, homeAbbr) {
+  const awayPct = Math.round(awayProb * 100), homePct = 100 - awayPct;
+  const barEl = document.getElementById(barId), numsEl = document.getElementById(numsId);
+  if (barEl) barEl.innerHTML = `<div class="away" style="width:${awayPct}%"></div><div class="home" style="width:${homePct}%"></div>`;
+  if (numsEl) numsEl.innerHTML = `<span class="away-pct">${awayAbbr} ${awayPct}%</span><span class="home-pct">${homePct}% ${homeAbbr}</span>`;
 }
 
 let currentWeek = 1;
@@ -1073,6 +1097,9 @@ function loadGames() {
     const awayRec = standings.get(g.awayId), homeRec = standings.get(g.homeId);
     const awayRecStr = `${awayRec.wins}-${awayRec.losses}${awayRec.ties ? '-' + awayRec.ties : ''}`;
     const homeRecStr = `${homeRec.wins}-${homeRec.losses}${homeRec.ties ? '-' + homeRec.ties : ''}`;
+    const { homeWinProb: baseHomeWinProb } = computeBaseWinProb(awayRec, homeRec, g.awayId, g.homeId);
+    const { homeWinProb: restAdjustedHomeWinProb } = applyRestTravelAdjustment(baseHomeWinProb, g);
+    const barId = `miniprobbar-${g.gamePk}`, numsId = `miniprobnums-${g.gamePk}`;
 
     row.innerHTML = `
       <div class="team-stack">
@@ -1088,14 +1115,21 @@ function loadGames() {
       <div class="divider-col"></div>
       <div class="matchup-stack">
         <div class="matchup-time">${statusLabel(g)}</div>
-        ${qbLineHTML(g.awayId, g.week, `qbav-${g.gamePk}-a`, `qbin-${g.gamePk}-a`)}
-        ${qbLineHTML(g.homeId, g.week, `qbav-${g.gamePk}-h`, `qbin-${g.gamePk}-h`)}
+        ${miniProbHTML(1 - restAdjustedHomeWinProb, restAdjustedHomeWinProb, away.abbr, home.abbr, barId, numsId)}
       </div>
     `;
     row.addEventListener('click', () => selectGame(g.gamePk, row));
     currentRowPair.appendChild(row);
-    patchQBLine(`qbav-${g.gamePk}-a`, `qbin-${g.gamePk}-a`, g.awayId);
-    patchQBLine(`qbav-${g.gamePk}-h`, `qbin-${g.gamePk}-h`, g.homeId);
+
+    // QB status needs a live fetch, so it's applied as a background patch once it resolves —
+    // only repaints if a QB is actually confirmed out, to avoid flicker on the common case.
+    Promise.all([fetchLiveQB(g.awayId), fetchLiveQB(g.homeId)]).then(([awayQB, homeQB]) => {
+      const awaySeverity = awayQB ? awayQB.severity : 'Healthy';
+      const homeSeverity = homeQB ? homeQB.severity : 'Healthy';
+      if (awaySeverity !== 'Out' && homeSeverity !== 'Out') return;
+      const finalHomeWinProb = applyQBAdjustment(restAdjustedHomeWinProb, awaySeverity, homeSeverity);
+      patchMiniProb(barId, numsId, 1 - finalHomeWinProb, finalHomeWinProb, away.abbr, home.abbr);
+    });
   });
 }
 
@@ -1130,42 +1164,15 @@ async function renderMatchup(gamePk) {
   const awayStats = standings.get(g.awayId), homeStats = standings.get(g.homeId);
 
   const { homeWinProb: baseHomeWinProb } = computeBaseWinProb(awayStats, homeStats, g.awayId, g.homeId);
-  let homeWinProb = baseHomeWinProb;
 
   const [awayQBLive, homeQBLive] = await Promise.all([fetchLiveQB(g.awayId), fetchLiveQB(g.homeId)]);
   const awayQBSample = getQBSample(g.awayId), homeQBSample = getQBSample(g.homeId);
   const awaySeverity = awayQBLive ? awayQBLive.severity : getQBStatusSample(g.awayId, g.week);
   const homeSeverity = homeQBLive ? homeQBLive.severity : getQBStatusSample(g.homeId, g.week);
-  if (awaySeverity === 'Out') homeWinProb = Math.min(0.95, homeWinProb + 0.10);
-  if (homeSeverity === 'Out') homeWinProb = Math.max(0.05, homeWinProb - 0.10);
+  let homeWinProb = applyQBAdjustment(baseHomeWinProb, awaySeverity, homeSeverity);
 
-  function getRestDays(teamId) {
-    const prior = ALL_GAMES.filter(x => (x.homeId === teamId || x.awayId === teamId) && new Date(x.gameDate) < new Date(g.gameDate))
-      .sort((a, b) => new Date(b.gameDate) - new Date(a.gameDate))[0];
-    if (!prior) return null;
-    return Math.round((new Date(g.gameDate) - new Date(prior.gameDate)) / 86400000);
-  }
-  function haversineMiles(lat1, lon1, lat2, lon2) {
-    const toRad = d => d * Math.PI / 180, R = 3958.8;
-    const dLat = toRad(lat2 - lat1), dLon = toRad(lon2 - lon1);
-    const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
-    return Math.round(R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
-  }
-  function tzBucket(lon) { if (lon >= -85) return -5; if (lon >= -100) return -6; if (lon >= -111) return -7; return -8; }
-  function travelContext(teamId) {
-    if (teamId === g.homeId) return { miles: 0, tzShift: 0, restDays: getRestDays(teamId) };
-    const team = TEAM_BY_ID.get(teamId);
-    return { miles: haversineMiles(team.lat, team.lon, home.lat, home.lon), tzShift: tzBucket(home.lon) - tzBucket(team.lon), restDays: getRestDays(teamId) };
-  }
-  const awayTravel = travelContext(g.awayId), homeTravel = travelContext(g.homeId);
-  function restShift(t) {
-    if (t.restDays === null) return 0;
-    if (t.restDays <= 4) return -0.03;
-    if (t.restDays >= 10) return 0.02;
-    return 0;
-  }
-  homeWinProb = Math.min(0.95, Math.max(0.05, homeWinProb - restShift(awayTravel) + restShift(homeTravel)));
-  if (awayTravel.miles > 1500) homeWinProb = Math.min(0.95, homeWinProb + 0.02);
+  const { homeWinProb: restAdjustedHomeWinProb, awayTravel, homeTravel } = applyRestTravelAdjustment(homeWinProb, g);
+  homeWinProb = restAdjustedHomeWinProb;
 
   const awayWinProb = 1 - homeWinProb;
   const homePctDisplay = Math.round(homeWinProb * 100);
