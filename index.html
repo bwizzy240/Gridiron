@@ -240,7 +240,7 @@
 </main>
 
 <footer>
-  Model blends scoring differential (Pythagorean win expectation), season record, home/away-specific record, and recent form, adds a small home-field edge and a preseason strength prior (from Kalshi's season win-total market, fading out as real games accumulate), then layers on rest since last game, travel distance/time-zone shift, weather, and starting-QB status; a QB confirmed out shifts the number, with a calibration adjustment based on backtested results — it is not a guarantee and doesn't account for everything a sportsbook prices in. Schedule, scores and standings are pulled live from ESPN's public scoreboard where available; weather comes from Open-Meteo; moneyline odds and the preseason prior come from Kalshi's public market data via a same-origin proxy; spread and total odds need a free Odds API key (see button above); the starting QB comes from ESPN's actual depth chart (ranked, not just whoever played most recently) along with that player's own current status; the injury report loads live from ESPN when you expand a game's details panel. Any of these can silently fall back to a generated sample or a neutral default if the live source doesn't respond — nothing here is guaranteed. Use this as one input, not the whole decision. Bet only what you can afford to lose.
+  Model blends scoring differential (Pythagorean win expectation), season record, home/away-specific record, and recent form, adds a small home-field edge and a preseason strength prior (from Kalshi's season win-total market, fading out as real games accumulate), then applies a calibration curve fit from a 1,360-game, 5-season backtest (the model's confidence above roughly two-thirds empirically carried little extra signal, so that range is compressed rather than left to run toward the extremes), before layering on rest since last game, travel distance/time-zone shift, weather, and starting-QB status — it is not a guarantee and doesn't account for everything a sportsbook prices in. Schedule, scores and standings are pulled live from ESPN's public scoreboard where available; weather comes from Open-Meteo; moneyline odds and the preseason prior come from Kalshi's public market data via a same-origin proxy; spread and total odds need a free Odds API key (see button above); the starting QB comes from ESPN's actual depth chart (ranked, not just whoever played most recently) along with that player's own current status; the injury report loads live from ESPN when you expand a game's details panel. Any of these can silently fall back to a generated sample or a neutral default if the live source doesn't respond — nothing here is guaranteed. Use this as one input, not the whole decision. Bet only what you can afford to lose.
 </footer>
 
 <script>
@@ -516,6 +516,40 @@ function applyShrinkage(prob, factor) { return 0.5 + (prob - 0.5) * factor; }
 // captures part of that (and needs games played to exist at all), so this small constant fills the
 // rest and is the only thing keeping early-season matchups from defaulting to a flat 50/50.
 const HOME_FIELD_EDGE = 0.02;
+// Empirical calibration curve, fit via isotonic regression (pool-adjacent-violators) on a 5-season
+// (2021-2025), 1,360-game backtest of this exact pipeline (shrinkage + home-field edge included).
+// That backtest showed the miscalibration wasn't uniform: 50-70% confidence was already accurate,
+// but every bucket above ~65% flattened out to a real-world win rate of roughly 64-66% regardless
+// of how much higher the raw model pushed — i.e. once this model gets "confident," extra confidence
+// beyond that point carried almost no real signal. A single flat shrinkage constant can't fix a
+// pattern shaped like that (it scales every prediction the same way), so this replaces the tail
+// behavior with a curve fit directly to the observed data instead of another guessed constant.
+// Anchors are (distance of the pipeline's output above 0.5, empirically corrected distance above 0.5).
+// Caveat worth remembering: this is an in-sample fit on the same seasons used to derive it, so
+// re-running that exact backtest will now look better almost by construction — the real test is
+// how it holds up on new games as the 2026 season actually plays out, or a held-out season split.
+const CALIBRATION_ANCHORS = [
+  [0, 0],
+  [0.0445, 0.0432],
+  [0.125, 0.118],
+  [0.2241, 0.1375],
+  [0.3585, 0.1616],
+  [0.5, 0.1616]
+];
+function applyCalibrationCurve(prob) {
+  const sign = prob >= 0.5 ? 1 : -1;
+  const dist = Math.min(0.5, Math.abs(prob - 0.5));
+  let corrected = CALIBRATION_ANCHORS[CALIBRATION_ANCHORS.length - 1][1];
+  for (let i = 0; i < CALIBRATION_ANCHORS.length - 1; i++) {
+    const [x0, y0] = CALIBRATION_ANCHORS[i], [x1, y1] = CALIBRATION_ANCHORS[i + 1];
+    if (dist >= x0 && dist <= x1) {
+      const t = x1 === x0 ? 0 : (dist - x0) / (x1 - x0);
+      corrected = y0 + t * (y1 - y0);
+      break;
+    }
+  }
+  return 0.5 + sign * corrected;
+}
 function computeBaseWinProb(awayStats, homeStats, awayTeamId, homeTeamId) {
   const awayGP = gamesPlayed(awayStats), homeGP = gamesPlayed(homeStats);
   const awayPrior = awayTeamId != null ? TEAM_PRIOR_WINPCT.get(awayTeamId) : undefined;
@@ -524,6 +558,7 @@ function computeBaseWinProb(awayStats, homeStats, awayTeamId, homeTeamId) {
   const homePct = blendPct(pctFromRecord(homeStats), pythPct(homeStats), splitPct(homeStats, 'home'), last5Pct(homeStats), homePrior, priorWeight(homeGP));
   let homeWinProb = applyShrinkage(log5(homePct, awayPct), MONEYLINE_SHRINKAGE);
   homeWinProb = Math.min(0.97, Math.max(0.03, homeWinProb + HOME_FIELD_EDGE));
+  homeWinProb = applyCalibrationCurve(homeWinProb);
   return { homeWinProb, awayWinProb: 1 - homeWinProb };
 }
 
